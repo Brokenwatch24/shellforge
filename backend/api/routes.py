@@ -2,9 +2,10 @@
 ShellForge API - Route handlers.
 """
 import uuid
+import shutil
 import os
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 
 from .schemas import EnclosureRequestSchema, EnclosureResponseSchema
@@ -20,11 +21,89 @@ router = APIRouter()
 OUTPUT_BASE = Path("./output/jobs")
 OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
 
+# Import directory for uploaded models
+IMPORTS_DIR = Path("./output/imports")
+IMPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 @router.get("/connectors", summary="List available connector types")
 def get_connectors():
     """Returns all supported connector cutout profiles."""
     return {"connectors": list_connectors()}
+
+
+@router.post("/import", summary="Import STL or STEP file")
+async def import_model(file: UploadFile = File(...)):
+    """
+    Accept an STL or STEP file upload.
+    - STL: compute bbox with trimesh, serve the file as-is
+    - STEP: load with CadQuery, compute bbox, export to STL
+    Returns: {name, width, depth, height, stl_url, job_id}
+    """
+    filename = file.filename or "model"
+    ext = Path(filename).suffix.lower()
+
+    if ext not in (".stl", ".step", ".stp"):
+        raise HTTPException(status_code=400, detail="Only .stl, .step, .stp files supported")
+
+    job_id = str(uuid.uuid4())[:8]
+    job_dir = IMPORTS_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save uploaded file
+    upload_path = job_dir / f"original{ext}"
+    content = await file.read()
+    with open(upload_path, "wb") as f:
+        f.write(content)
+
+    name = Path(filename).stem
+    stl_out = job_dir / "model.stl"
+
+    try:
+        if ext == ".stl":
+            import trimesh
+            mesh = trimesh.load(str(upload_path), force="mesh")
+            bbox = mesh.bounding_box.extents  # [x, y, z] extents
+            width = float(bbox[0])
+            depth = float(bbox[1])
+            height = float(bbox[2])
+            # Copy as-is for preview
+            shutil.copy(str(upload_path), str(stl_out))
+
+        else:
+            # STEP — load with CadQuery
+            import cadquery as cq
+            result = cq.importers.importStep(str(upload_path))
+            bb = result.val().BoundingBox()
+            width = float(bb.xmax - bb.xmin)
+            depth = float(bb.ymax - bb.ymin)
+            height = float(bb.zmax - bb.zmin)
+            cq.exporters.export(result, str(stl_out))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")
+
+    return {
+        "name": name,
+        "width": round(width, 2),
+        "depth": round(depth, 2),
+        "height": round(height, 2),
+        "stl_url": f"http://localhost:8000/api/v1/model/{job_id}",
+        "job_id": job_id,
+    }
+
+
+@router.get("/model/{job_id}", summary="Serve imported model STL for preview")
+def get_model_stl(job_id: str):
+    """Serve the STL file for a given import job."""
+    stl_path = IMPORTS_DIR / job_id / "model.stl"
+    if not stl_path.exists():
+        raise HTTPException(status_code=404, detail="Model not found")
+    return FileResponse(
+        path=str(stl_path),
+        media_type="model/stl",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 @router.post("/generate", response_model=EnclosureResponseSchema, summary="Generate enclosure")

@@ -24,6 +24,17 @@ export async function generateEnclosure(payload) {
   return res.json();
 }
 
+export async function importModel(file) {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${BASE}/import`, { method: "POST", body: form });
+  if (!res.ok) {
+    const e = await res.json();
+    throw new Error(e.detail || "Import failed");
+  }
+  return res.json();
+}
+
 export function downloadUrl(jobId, part) {
   return `${BASE}/download/${jobId}/${part}`;
 }
