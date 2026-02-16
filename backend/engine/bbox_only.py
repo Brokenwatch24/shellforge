@@ -3,9 +3,59 @@ ShellForge - Generate enclosure from manual bounding box (no model file needed).
 Useful for quick testing and for users who just know their component sizes.
 """
 import cadquery as cq
+import math
 from pathlib import Path
 
 from .models import EnclosureConfig, Component, Vector3, LidStyle, PartConfig
+
+
+def _rotated_bbox(width, depth, height, rot_x=0, rot_y=0, rot_z=0):
+    """
+    Compute the AABB of a box after rotation.
+    rot_x/y/z are Three.js Euler angles in radians (XYZ order).
+    Three.js coords: X=engX, Y=engZ(up), Z=engY(depth)
+    Returns (eff_width, eff_depth, eff_height) in engineering space.
+    """
+    if rot_x == 0 and rot_y == 0 and rot_z == 0:
+        return width, depth, height
+
+    hw, hh, hd = width / 2, height / 2, depth / 2
+
+    # Build rotation matrices for XYZ Euler (Three.js convention)
+    cx, sx = math.cos(rot_x), math.sin(rot_x)
+    cy, sy = math.cos(rot_y), math.sin(rot_y)
+    cz, sz = math.cos(rot_z), math.sin(rot_z)
+
+    # Rotate 8 corners in Three.js local space: (±hw, ±hh, ±hd)
+    # Apply R = Rz * Ry * Rx (intrinsic XYZ = extrinsic ZYX)
+    corners = []
+    for sx_ in [-1, 1]:
+        for sy_ in [-1, 1]:
+            for sz_ in [-1, 1]:
+                x, y, z = sx_ * hw, sy_ * hh, sz_ * hd
+                # Apply rotX
+                x1 = x
+                y1 = y * cx - z * sx
+                z1 = y * sx + z * cx
+                # Apply rotY
+                x2 = x1 * cy + z1 * sy
+                y2 = y1
+                z2 = -x1 * sy + z1 * cy
+                # Apply rotZ
+                x3 = x2 * cz - y2 * sz
+                y3 = x2 * sz + y2 * cz
+                z3 = z2
+                corners.append((x3, y3, z3))
+
+    xs = [c[0] for c in corners]
+    ys = [c[1] for c in corners]
+    zs = [c[2] for c in corners]
+
+    # Three.js: X=engX, Y=engZ(up), Z=engY(depth)
+    eff_width  = max(xs) - min(xs)   # engineering width (X)
+    eff_height = max(ys) - min(ys)   # engineering height (Z/up) from Three.js Y
+    eff_depth  = max(zs) - min(zs)   # engineering depth (Y) from Three.js Z
+    return eff_width, eff_depth, eff_height
 from .generator import (
     compute_combined_bbox,
     _apply_connector_cutout,
@@ -58,6 +108,16 @@ def generate_from_manual_bbox(
     components = []
     for spec in components_bbox:
         gz = spec.get("ground_z", spec.get("z", 0))
+        rx = spec.get("rot_x", 0)
+        ry = spec.get("rot_y", 0)
+        rz = spec.get("rot_z", 0)
+
+        # Compute effective (rotated) dimensions for AABB
+        eff_w, eff_d, eff_h = _rotated_bbox(
+            spec["width"], spec["depth"], spec["height"],
+            rot_x=rx, rot_y=ry, rot_z=rz,
+        )
+
         comp = Component(
             name=spec["name"],
             file_path="",  # no file for manual bbox
@@ -71,17 +131,17 @@ def generate_from_manual_bbox(
             ground_z=gz,
             standoff_positions=spec.get("standoff_positions", []),
         )
-        w = spec["width"] / 2
-        d = spec["depth"] / 2
+        hw = eff_w / 2
+        hd = eff_d / 2
         comp.bbox_min = Vector3(
-            comp.position.x - w,
-            comp.position.y - d,
+            comp.position.x - hw,
+            comp.position.y - hd,
             gz,
         )
         comp.bbox_max = Vector3(
-            comp.position.x + w,
-            comp.position.y + d,
-            gz + spec["height"],
+            comp.position.x + hw,
+            comp.position.y + hd,
+            gz + eff_h,
         )
         components.append(comp)
 

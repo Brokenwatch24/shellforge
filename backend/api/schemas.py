@@ -48,6 +48,10 @@ class ComponentManualSchema(BaseModel):
     x: float = Field(0.0, example=0.0, description="Position offset X in mm")
     y: float = Field(0.0, example=0.0, description="Position offset Y in mm")
     z: float = Field(0.0, example=0.0, description="Position offset Z in mm")
+    # Rotation (Three.js Euler angles in radians: rotX=pitch, rotY=yaw, rotZ=roll)
+    rot_x: float = Field(0.0, description="Rotation around X axis (radians)")
+    rot_y: float = Field(0.0, description="Rotation around Y axis (radians)")
+    rot_z: float = Field(0.0, description="Rotation around Z axis (radians)")
     # PCB fields
     is_pcb: bool = Field(False, description="Is this a PCB? Generates standoffs.")
     pcb_screw_diameter: float = Field(3.0, description="PCB screw hole diameter (mm)")

@@ -28,7 +28,57 @@ const CONNECTOR_PROFILES = {
   rj45:        { w: 16.5, h: 13.5 },
 };
 
+// ── Helper: rotated AABB in engineering coordinates ───────────────────────────
+// comp.rotX/Y/Z are Three.js Euler angles.
+// Three.js: X=eng.X, Y=eng.Z(up), Z=eng.Y(depth)
+// Returns AABB relative to component center, in engineering coords.
+
+function getRotatedAABB(comp) {
+  const hw = (comp.width  || 0) / 2;
+  const hh = (comp.height || 0) / 2;
+  const hd = (comp.depth  || 0) / 2;
+  const rotX = comp.rotX ?? 0;
+  const rotY = comp.rotY ?? 0;
+  const rotZ = comp.rotZ ?? 0;
+
+  if (rotX === 0 && rotY === 0 && rotZ === 0) {
+    // No rotation — trivial AABB in engineering coords
+    // eng X=±hw, eng Y(depth)=±hd, eng Z(up)=±hh
+    return { minX: -hw, maxX: hw, minY: -hd, maxY: hd, minZ: -hh, maxZ: hh };
+  }
+
+  // Build 8 corners in Three.js local space: ±hw in Three.js X, ±hh in Three.js Y, ±hd in Three.js Z
+  const euler = new THREE.Euler(rotX, rotY, rotZ, "XYZ");
+  const corners = [];
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        corners.push(new THREE.Vector3(sx * hw, sy * hh, sz * hd));
+      }
+    }
+  }
+
+  let tminX = Infinity, tmaxX = -Infinity;
+  let tminY = Infinity, tmaxY = -Infinity;
+  let tminZ = Infinity, tmaxZ = -Infinity;
+
+  for (const c of corners) {
+    c.applyEuler(euler);
+    tminX = Math.min(tminX, c.x); tmaxX = Math.max(tmaxX, c.x);
+    tminY = Math.min(tminY, c.y); tmaxY = Math.max(tmaxY, c.y);
+    tminZ = Math.min(tminZ, c.z); tmaxZ = Math.max(tmaxZ, c.z);
+  }
+
+  // Map Three.js → engineering: X→X, Y→engZ(up), Z→engY(depth)
+  return {
+    minX: tminX, maxX: tmaxX,   // eng X
+    minY: tminZ, maxY: tmaxZ,   // eng Y (depth) from Three.js Z
+    minZ: tminY, maxZ: tmaxY,   // eng Z (up) from Three.js Y
+  };
+}
+
 // ── Helper: compute enclosure bbox from components + config ───────────────────
+// Returns world-space dimensions AND center position for Three.js rendering.
 
 function computeEnclosureBbox(components, config) {
   const visible = components.filter((c) => c.visible !== false);
@@ -42,22 +92,46 @@ function computeEnclosureBbox(components, config) {
 
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
   for (const c of visible) {
-    const cx = c.x ?? 0, cy = c.y ?? 0, cz = c.ground_z ?? c.z ?? 0;
-    minX = Math.min(minX, cx - c.width / 2);
-    maxX = Math.max(maxX, cx + c.width / 2);
-    minY = Math.min(minY, cy - c.depth / 2);
-    maxY = Math.max(maxY, cy + c.depth / 2);
-    minZ = Math.min(minZ, cz);
-    maxZ = Math.max(maxZ, cz + c.height);
+    const aabb = getRotatedAABB(c);
+    const cx = c.x ?? 0;
+    const cy = c.y ?? 0;
+    // Component center in eng Z (up): ground_z + height/2
+    const cz = (c.ground_z ?? c.z ?? 0) + (c.height ?? 0) / 2;
+
+    minX = Math.min(minX, cx + aabb.minX);
+    maxX = Math.max(maxX, cx + aabb.maxX);
+    minY = Math.min(minY, cy + aabb.minY);
+    maxY = Math.max(maxY, cy + aabb.maxY);
+    minZ = Math.min(minZ, cz + aabb.minZ);
+    maxZ = Math.max(maxZ, cz + aabb.maxZ);
   }
+
   const innerW = (maxX - minX) + pad_x * 2;
   const innerD = (maxY - minY) + pad_y * 2;
   const innerH = (maxZ - minZ) + pad_z * 2;
+
+  const outerW = innerW + wall * 2;
+  const outerD = innerD + wall * 2;
+  const outerH = innerH + floor;
+
+  // World center of enclosure in Three.js coordinates
+  // Three.js: X = eng X, Y = eng Z (up), Z = eng Y (depth)
+  const worldX = (minX + maxX) / 2;
+  const worldZ = (minY + maxY) / 2;
+  // Outer box bottom in eng Z: minZ - pad_z - floor
+  // Outer box top: maxZ + pad_z
+  // World Y center = bottom + outerH/2
+  const encBottomY = minZ - pad_z - floor;
+  const worldY = encBottomY + outerH / 2;
+
   return {
-    w: innerW + wall * 2,
-    d: innerD + wall * 2,
-    h: innerH + floor,
+    w: outerW,
+    d: outerD,
+    h: outerH,
+    innerW, innerD, innerH,
+    worldX, worldY, worldZ,
   };
 }
 
@@ -147,15 +221,17 @@ function ComponentObject({
   const threeX = comp.x ?? 0;
   const threeY = (comp.ground_z ?? 0) + comp.height / 2;
   const threeZ = comp.y ?? 0;
+  const rotX   = comp.rotX ?? 0;
   const rotY   = comp.rotY ?? 0;
+  const rotZ   = comp.rotZ ?? 0;
 
-  // Sync position from state (only when not dragging)
+  // Sync position+rotation from state (only when not dragging)
   useEffect(() => {
     if (!isDragging && groupRef.current) {
       groupRef.current.position.set(threeX, threeY, threeZ);
-      groupRef.current.rotation.set(0, rotY, 0);
+      groupRef.current.rotation.set(rotX, rotY, rotZ);
     }
-  }, [threeX, threeY, threeZ, rotY, isDragging]);
+  }, [threeX, threeY, threeZ, rotX, rotY, rotZ, isDragging]);
 
   const handleMouseDown = useCallback(() => {
     setIsDragging(true);
@@ -179,7 +255,9 @@ function ComponentObject({
         x: newX,
         y: newY,
         ground_z: newZ,
+        rotX: r.x,
         rotY: r.y,
+        rotZ: r.z,
       });
     }
   }, [comp.id, comp.height, onMove, setOrbitEnabled, snapSize]);
@@ -194,7 +272,9 @@ function ComponentObject({
       x: p.x,
       y: p.z,
       ground_z: newZ,
+      rotX: r.x,
       rotY: r.y,
+      rotZ: r.z,
     });
   }, [comp.id, comp.height, isDragging, onMove]);
 
@@ -236,7 +316,7 @@ function ComponentObject({
         color={color}
       />
 
-      {/* The actual mesh group */}
+      {/* The actual mesh group — rotation applied via useEffect */}
       <group ref={groupRef} onClick={handleClick}>
         {content}
         {isSelected && (
@@ -261,6 +341,7 @@ function ComponentObject({
 }
 
 // ── Cutout visualization on enclosure walls ───────────────────────────────────
+// Positions are LOCAL to the enclosure group (centered at enclosure center).
 
 function CutoutBox({ cutout, enclosure, isSelected, onSelect, onMove, setOrbitEnabled }) {
   const meshRef = useRef();
@@ -273,46 +354,47 @@ function CutoutBox({ cutout, enclosure, isSelected, onSelect, onMove, setOrbitEn
   const thickness = 2;
   const halfW = enclosure.w / 2;
   const halfD = enclosure.d / 2;
-  const centerY = enclosure.h / 2;
 
   const ox = cutout.offset_x ?? 0;
   const oy = cutout.offset_y ?? 0;
 
+  // Positions are relative to enclosure center (group handles world offset)
+  // Vertical: oy is offset from face vertical center (y=0 in local space)
   let position, rotation, dims;
   let showX = true, showY = true, showZ = false;
   let fixedAxis = "z", fixedValue = halfD;
 
   switch (cutout.face) {
     case "front":
-      position = [ox, centerY + oy, halfD];
+      position = [ox, oy, halfD];
       rotation = [0, 0, 0];
       dims = [cw, ch, thickness];
       showX = true; showY = true; showZ = false;
       fixedAxis = "z"; fixedValue = halfD;
       break;
     case "back":
-      position = [ox, centerY + oy, -halfD];
+      position = [ox, oy, -halfD];
       rotation = [0, 0, 0];
       dims = [cw, ch, thickness];
       showX = true; showY = true; showZ = false;
       fixedAxis = "z"; fixedValue = -halfD;
       break;
     case "left":
-      position = [-halfW, centerY + oy, ox];
+      position = [-halfW, oy, ox];
       rotation = [0, Math.PI / 2, 0];
       dims = [cw, ch, thickness];
       showX = false; showY = true; showZ = true;
       fixedAxis = "x"; fixedValue = -halfW;
       break;
     case "right":
-      position = [halfW, centerY + oy, ox];
+      position = [halfW, oy, ox];
       rotation = [0, Math.PI / 2, 0];
       dims = [cw, ch, thickness];
       showX = false; showY = true; showZ = true;
       fixedAxis = "x"; fixedValue = halfW;
       break;
     default:
-      position = [ox, centerY + oy, halfD];
+      position = [ox, oy, halfD];
       rotation = [0, 0, 0];
       dims = [cw, ch, thickness];
   }
@@ -328,16 +410,15 @@ function CutoutBox({ cutout, enclosure, isSelected, onSelect, onMove, setOrbitEn
     let newOx, newOy;
     if (cutout.face === "left" || cutout.face === "right") {
       newOx = pos.z;
-      newOy = pos.y - centerY;
-      // Clamp fixed axis back to wall face
+      newOy = pos.y;
       meshRef.current.position.x = fixedValue;
     } else {
       newOx = pos.x;
-      newOy = pos.y - centerY;
+      newOy = pos.y;
       meshRef.current.position.z = fixedValue;
     }
     onMove(cutout.id, { offset_x: newOx, offset_y: newOy });
-  }, [cutout.id, cutout.face, centerY, fixedValue, onMove, setOrbitEnabled]);
+  }, [cutout.id, cutout.face, fixedValue, onMove, setOrbitEnabled]);
 
   const color = isSelected ? "#facc15" : "#94a3b8";
 
@@ -369,6 +450,7 @@ function CutoutBox({ cutout, enclosure, isSelected, onSelect, onMove, setOrbitEn
 }
 
 // ── Custom cutout visualization ───────────────────────────────────────────────
+// Positions are LOCAL to the enclosure group.
 
 function CustomCutoutMesh({ cutout, enclosure, isSelected, onSelect, onMove, setOrbitEnabled }) {
   const meshRef = useRef();
@@ -380,7 +462,6 @@ function CustomCutoutMesh({ cutout, enclosure, isSelected, onSelect, onMove, set
   const thickness = 2;
   const halfW = enclosure.w / 2;
   const halfD = enclosure.d / 2;
-  const centerY = enclosure.h / 2;
   const ox = cutout.offset_x ?? 0;
   const oy = cutout.offset_y ?? 0;
 
@@ -390,31 +471,31 @@ function CustomCutoutMesh({ cutout, enclosure, isSelected, onSelect, onMove, set
 
   switch (cutout.face) {
     case "front":
-      position = [ox, centerY + oy, halfD + 0.5];
+      position = [ox, oy, halfD + 0.5];
       rotation = [0, 0, 0];
       showX = true; showY = true; showZ = false;
       fixedAxis = "z"; fixedValue = halfD + 0.5;
       break;
     case "back":
-      position = [ox, centerY + oy, -halfD - 0.5];
+      position = [ox, oy, -halfD - 0.5];
       rotation = [0, 0, 0];
       showX = true; showY = true; showZ = false;
       fixedAxis = "z"; fixedValue = -halfD - 0.5;
       break;
     case "left":
-      position = [-halfW - 0.5, centerY + oy, ox];
+      position = [-halfW - 0.5, oy, ox];
       rotation = [0, Math.PI / 2, 0];
       showX = false; showY = true; showZ = true;
       fixedAxis = "x"; fixedValue = -halfW - 0.5;
       break;
     case "right":
-      position = [halfW + 0.5, centerY + oy, ox];
+      position = [halfW + 0.5, oy, ox];
       rotation = [0, Math.PI / 2, 0];
       showX = false; showY = true; showZ = true;
       fixedAxis = "x"; fixedValue = halfW + 0.5;
       break;
     default:
-      position = [ox, centerY + oy, halfD + 0.5];
+      position = [ox, oy, halfD + 0.5];
       rotation = [0, 0, 0];
   }
 
@@ -429,15 +510,15 @@ function CustomCutoutMesh({ cutout, enclosure, isSelected, onSelect, onMove, set
     let newOx, newOy;
     if (cutout.face === "left" || cutout.face === "right") {
       newOx = pos.z;
-      newOy = pos.y - centerY;
+      newOy = pos.y;
       meshRef.current.position.x = fixedValue;
     } else {
       newOx = pos.x;
-      newOy = pos.y - centerY;
+      newOy = pos.y;
       meshRef.current.position.z = fixedValue;
     }
     onMove(cutout.id, { offset_x: newOx, offset_y: newOy });
-  }, [cutout.id, cutout.face, centerY, fixedValue, onMove, setOrbitEnabled]);
+  }, [cutout.id, cutout.face, fixedValue, onMove, setOrbitEnabled]);
 
   const color = isSelected ? "#fbbf24" : "#f59e0b";
   const shape = cutout.shape;
@@ -566,8 +647,7 @@ function buildFootprintPoints(w, d, fp) {
   return null;
 }
 
-function FootprintShape3D({ w, d, h, fp, color, wireframe }) {
-  // Compute geometry only when inputs actually change (fp by reference — new object = new footprint)
+function FootprintShape3D({ w, d, h, fp, color, wireframe, yOffset = 0 }) {
   const geometry = useMemo(() => {
     const pts = buildFootprintPoints(w, d, fp);
     if (!pts) return null;
@@ -584,19 +664,20 @@ function FootprintShape3D({ w, d, h, fp, color, wireframe }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [w, d, h, fp]);
 
-  // Dispose old geometry on unmount or when geometry changes
   useEffect(() => () => { if (geometry) geometry.dispose(); }, [geometry]);
 
   if (!geometry) return null;
 
   return (
-    <mesh geometry={geometry} position={[0, 0, 0]}>
+    <mesh geometry={geometry} position={[0, yOffset, 0]}>
       <meshBasicMaterial color={color} wireframe={wireframe} transparent opacity={wireframe ? 1 : 0.15} />
     </mesh>
   );
 }
 
 // ── Enclosure wireframe box with part highlighting ────────────────────────────
+// Rendered inside a group at the enclosure's world center.
+// All positions here are LOCAL (relative to group center).
 
 function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
   if (!enclosure) return null;
@@ -606,20 +687,21 @@ function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
   const bracketEnabled = parts && parts.bracket && parts.bracket.enabled;
 
   const isNonRect = footprint && footprint.shape && footprint.shape !== "rectangle";
+  const hh = enclosure.h / 2;  // half-height for local coords
 
   return (
     <group>
-      {/* Base half highlight */}
+      {/* Base half highlight — bottom ~60% of enclosure */}
       {selectedPart === "base" && (
-        <mesh position={[0, enclosure.h * 0.3, 0]}>
+        <mesh position={[0, -hh * 0.4, 0]}>
           <boxGeometry args={[enclosure.w + 0.5, enclosure.h * 0.6, enclosure.d + 0.5]} />
           <meshStandardMaterial color="#4ade80" transparent opacity={0.12} />
         </mesh>
       )}
 
-      {/* Lid half highlight */}
+      {/* Lid half highlight — top ~30% of enclosure */}
       {selectedPart === "lid" && (
-        <mesh position={[0, enclosure.h * 0.85, 0]}>
+        <mesh position={[0, hh * 0.7, 0]}>
           <boxGeometry args={[enclosure.w + 0.5, enclosure.h * 0.3, enclosure.d + 0.5]} />
           <meshStandardMaterial color="#60a5fa" transparent opacity={0.15} />
         </mesh>
@@ -627,7 +709,7 @@ function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
 
       {/* Tray: thin horizontal plane at tray_z height */}
       {selectedPart === "tray" && trayEnabled && (
-        <mesh position={[0, trayZ + 1, 0]}>
+        <mesh position={[0, -hh + trayZ + 1, 0]}>
           <boxGeometry args={[enclosure.w * 0.9, 2, enclosure.d * 0.9]} />
           <meshStandardMaterial color="#38bdf8" transparent opacity={0.45} />
         </mesh>
@@ -635,7 +717,7 @@ function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
 
       {/* Bracket: small shape on one side */}
       {selectedPart === "bracket" && bracketEnabled && (
-        <mesh position={[enclosure.w / 2 + 2, enclosure.h * 0.3, 0]}>
+        <mesh position={[enclosure.w / 2 + 2, -hh * 0.4, 0]}>
           <boxGeometry args={[4, enclosure.h * 0.6, 30]} />
           <meshStandardMaterial color="#f59e0b" transparent opacity={0.5} />
         </mesh>
@@ -650,9 +732,10 @@ function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
           fp={footprint}
           color="#4ade80"
           wireframe={true}
+          yOffset={-hh}
         />
       ) : (
-        <mesh position={[0, enclosure.h / 2, 0]}>
+        <mesh position={[0, 0, 0]}>
           <boxGeometry args={[enclosure.w, enclosure.h, enclosure.d]} />
           <meshBasicMaterial color="#4ade80" wireframe />
         </mesh>
@@ -677,7 +760,7 @@ function CameraFramer({ triggerFrame, enclosure }) {
     if (enclosure) {
       const maxDim = Math.max(enclosure.w, enclosure.d, enclosure.h);
       distance = maxDim * 2;
-      target.set(0, enclosure.h / 2, 0);
+      target.set(enclosure.worldX, enclosure.worldY, enclosure.worldZ);
     }
 
     camera.position.set(
@@ -708,6 +791,11 @@ function Scene({
     [components, config]
   );
 
+  // Enclosure group world position
+  const encPos = enclosure
+    ? [enclosure.worldX, enclosure.worldY, enclosure.worldZ]
+    : [0, 0, 0];
+
   return (
     <>
       <ambientLight intensity={0.6} />
@@ -730,41 +818,44 @@ function Scene({
         />
       ))}
 
-      {/* Enclosure outline — updates reactively with components & config */}
+      {/* Enclosure group — centered at computed world position */}
       {enclosure && (
-        <EnclosureBox
-          enclosure={enclosure}
-          selectedPart={selectedPart}
-          parts={parts}
-          footprint={footprint}
-        />
+        <group position={encPos}>
+          {/* Enclosure outline + part highlights */}
+          <EnclosureBox
+            enclosure={enclosure}
+            selectedPart={selectedPart}
+            parts={parts}
+            footprint={footprint}
+          />
+
+          {/* Connector cutout boxes on walls */}
+          {cutouts.map((co) => (
+            <CutoutBox
+              key={co.id}
+              cutout={co}
+              enclosure={enclosure}
+              isSelected={selectedId === co.id && selectedType === "cutout"}
+              onSelect={onSelectCutout}
+              onMove={onCutoutMove}
+              setOrbitEnabled={setOrbitEnabled}
+            />
+          ))}
+
+          {/* Custom cutouts on walls */}
+          {customCutouts && customCutouts.map((cc) => (
+            <CustomCutoutMesh
+              key={cc.id}
+              cutout={cc}
+              enclosure={enclosure}
+              isSelected={selectedId === cc.id && selectedType === "customCutout"}
+              onSelect={onSelectCustomCutout}
+              onMove={onCustomCutoutMove}
+              setOrbitEnabled={setOrbitEnabled}
+            />
+          ))}
+        </group>
       )}
-
-      {/* Connector cutout boxes on walls */}
-      {enclosure && cutouts.map((co) => (
-        <CutoutBox
-          key={co.id}
-          cutout={co}
-          enclosure={enclosure}
-          isSelected={selectedId === co.id && selectedType === "cutout"}
-          onSelect={onSelectCutout}
-          onMove={onCutoutMove}
-          setOrbitEnabled={setOrbitEnabled}
-        />
-      ))}
-
-      {/* Custom cutouts on walls */}
-      {enclosure && customCutouts && customCutouts.map((cc) => (
-        <CustomCutoutMesh
-          key={cc.id}
-          cutout={cc}
-          enclosure={enclosure}
-          isSelected={selectedId === cc.id && selectedType === "customCutout"}
-          onSelect={onSelectCustomCutout}
-          onMove={onCustomCutoutMove}
-          setOrbitEnabled={setOrbitEnabled}
-        />
-      ))}
 
       {/* Grid floor */}
       <Grid
@@ -822,7 +913,7 @@ function ViewToolbar({ viewMode, setViewMode, transformMode, setTransformMode, o
         <button
           className={`toolbar-btn${transformMode === "rotate" ? " active" : ""}`}
           onClick={() => setTransformMode("rotate")}
-          title="Rotate selected component"
+          title="Rotate selected component (X/Y/Z)"
         >
           Rotate
         </button>
@@ -863,6 +954,11 @@ export default function Viewport3D({
     });
   }
 
+  const isCustomShape = footprint && footprint.shape && footprint.shape !== "rectangle";
+  const shapeLabel = isCustomShape
+    ? footprint.shape.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+    : null;
+
   return (
     <div className="viewport-wrapper">
       <ViewToolbar
@@ -874,8 +970,37 @@ export default function Viewport3D({
         snapSize={snapSize}
         onSnapCycle={handleSnapCycle}
       />
-      <div className="viewer-wrapper">
+      <div className="viewer-wrapper" style={{ position: "relative" }}>
         <div className="viewer-label">3D Preview</div>
+
+        {/* Wrapper mode indicator overlay */}
+        <div style={{
+          position: "absolute",
+          top: 40,
+          right: 10,
+          zIndex: 10,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          background: "rgba(0,0,0,0.72)",
+          borderRadius: 6,
+          padding: "4px 10px",
+          fontSize: 11,
+          pointerEvents: "none",
+          userSelect: "none",
+        }}>
+          <div style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: isCustomShape ? "#f97316" : "#22c55e",
+            flexShrink: 0,
+          }} />
+          <span style={{ color: isCustomShape ? "#f97316" : "#22c55e", whiteSpace: "nowrap" }}>
+            {isCustomShape ? `Custom Shape: ${shapeLabel}` : "Auto Wrap"}
+          </span>
+        </div>
+
         <Canvas
           camera={{ position: [80, 60, 80], fov: 45 }}
           style={{ background: "#0a0a0d" }}
