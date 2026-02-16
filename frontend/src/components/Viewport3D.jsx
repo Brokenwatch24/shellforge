@@ -115,19 +115,17 @@ function BoxContent({ width, height, depth, color, viewMode }) {
 function ElevationLine({ x, z, groundZ, color }) {
   if (!groundZ || groundZ <= 0) return null;
 
-  const points = useMemo(() => {
-    // In Three.js: Y is up, X is right, Z is front-back
-    // Component ground is at threeY = groundZ, floor is at threeY = 0
-    return [
-      new THREE.Vector3(x, 0, z),
-      new THREE.Vector3(x, groundZ, z),
-    ];
-  }, [x, z, groundZ]);
+  const points = useMemo(() => [
+    new THREE.Vector3(x, 0, z),
+    new THREE.Vector3(x, groundZ, z),
+  ], [x, z, groundZ]);
 
   const geometry = useMemo(() => {
     const geo = new THREE.BufferGeometry().setFromPoints(points);
     return geo;
   }, [points]);
+
+  useEffect(() => () => geometry.dispose(), [geometry]);
 
   return (
     <line geometry={geometry}>
@@ -170,12 +168,10 @@ function ComponentObject({
     if (groupRef.current) {
       const p = groupRef.current.position;
       const r = groupRef.current.rotation;
-      // Apply grid snap if enabled
       const snap = (v) => snapSize > 0 ? Math.round(v / snapSize) * snapSize : v;
       const newX = snap(p.x);
       const newY = snap(p.z);
       const newZ = Math.max(0, snap(p.y - comp.height / 2));
-      // Sync mesh to snapped position
       if (snapSize > 0) {
         groupRef.current.position.set(newX, newZ + comp.height / 2, newY);
       }
@@ -187,6 +183,20 @@ function ComponentObject({
       });
     }
   }, [comp.id, comp.height, onMove, setOrbitEnabled, snapSize]);
+
+  // Real-time sync during drag — reads position+rotation and pushes to state
+  const handleChange = useCallback(() => {
+    if (!groupRef.current || !isDragging) return;
+    const p = groupRef.current.position;
+    const r = groupRef.current.rotation;
+    const newZ = Math.max(0, p.y - comp.height / 2);
+    onMove(comp.id, {
+      x: p.x,
+      y: p.z,
+      ground_z: newZ,
+      rotY: r.y,
+    });
+  }, [comp.id, comp.height, isDragging, onMove]);
 
   const handleClick = useCallback((e) => {
     e.stopPropagation();
@@ -243,7 +253,7 @@ function ComponentObject({
           mode={transformMode}
           onMouseDown={handleMouseDown}
           onMouseUp={handleMouseUp}
-          showY={transformMode === "translate"}
+          onChange={handleChange}
         />
       )}
     </>
@@ -252,7 +262,9 @@ function ComponentObject({
 
 // ── Cutout visualization on enclosure walls ───────────────────────────────────
 
-function CutoutBox({ cutout, enclosure, isSelected, onSelect }) {
+function CutoutBox({ cutout, enclosure, isSelected, onSelect, onMove, setOrbitEnabled }) {
+  const meshRef = useRef();
+
   if (!enclosure) return null;
 
   const profile = CONNECTOR_PROFILES[cutout.connector_type] || { w: 10, h: 5 };
@@ -261,33 +273,43 @@ function CutoutBox({ cutout, enclosure, isSelected, onSelect }) {
   const thickness = 2;
   const halfW = enclosure.w / 2;
   const halfD = enclosure.d / 2;
-  const halfH = enclosure.h / 2;
-  const centerY = halfH;
+  const centerY = enclosure.h / 2;
 
   const ox = cutout.offset_x ?? 0;
   const oy = cutout.offset_y ?? 0;
 
   let position, rotation, dims;
+  let showX = true, showY = true, showZ = false;
+  let fixedAxis = "z", fixedValue = halfD;
+
   switch (cutout.face) {
     case "front":
       position = [ox, centerY + oy, halfD];
       rotation = [0, 0, 0];
       dims = [cw, ch, thickness];
+      showX = true; showY = true; showZ = false;
+      fixedAxis = "z"; fixedValue = halfD;
       break;
     case "back":
       position = [ox, centerY + oy, -halfD];
       rotation = [0, 0, 0];
       dims = [cw, ch, thickness];
+      showX = true; showY = true; showZ = false;
+      fixedAxis = "z"; fixedValue = -halfD;
       break;
     case "left":
       position = [-halfW, centerY + oy, ox];
       rotation = [0, Math.PI / 2, 0];
       dims = [cw, ch, thickness];
+      showX = false; showY = true; showZ = true;
+      fixedAxis = "x"; fixedValue = -halfW;
       break;
     case "right":
       position = [halfW, centerY + oy, ox];
       rotation = [0, Math.PI / 2, 0];
       dims = [cw, ch, thickness];
+      showX = false; showY = true; showZ = true;
+      fixedAxis = "x"; fixedValue = halfW;
       break;
     default:
       position = [ox, centerY + oy, halfD];
@@ -295,22 +317,62 @@ function CutoutBox({ cutout, enclosure, isSelected, onSelect }) {
       dims = [cw, ch, thickness];
   }
 
+  const handleMouseDown = useCallback(() => {
+    if (setOrbitEnabled) setOrbitEnabled(false);
+  }, [setOrbitEnabled]);
+
+  const handleMouseUp = useCallback(() => {
+    if (setOrbitEnabled) setOrbitEnabled(true);
+    if (!meshRef.current || !onMove) return;
+    const pos = meshRef.current.position;
+    let newOx, newOy;
+    if (cutout.face === "left" || cutout.face === "right") {
+      newOx = pos.z;
+      newOy = pos.y - centerY;
+      // Clamp fixed axis back to wall face
+      meshRef.current.position.x = fixedValue;
+    } else {
+      newOx = pos.x;
+      newOy = pos.y - centerY;
+      meshRef.current.position.z = fixedValue;
+    }
+    onMove(cutout.id, { offset_x: newOx, offset_y: newOy });
+  }, [cutout.id, cutout.face, centerY, fixedValue, onMove, setOrbitEnabled]);
+
   const color = isSelected ? "#facc15" : "#94a3b8";
+
   return (
-    <mesh
-      position={position}
-      rotation={rotation}
-      onClick={(e) => { e.stopPropagation(); onSelect(cutout.id); }}
-    >
-      <boxGeometry args={dims} />
-      <meshStandardMaterial color={color} transparent opacity={0.85} />
-    </mesh>
+    <>
+      <mesh
+        ref={meshRef}
+        position={position}
+        rotation={rotation}
+        onClick={(e) => { e.stopPropagation(); onSelect(cutout.id); }}
+      >
+        <boxGeometry args={dims} />
+        <meshStandardMaterial color={color} transparent opacity={0.85} />
+      </mesh>
+
+      {isSelected && meshRef.current && onMove && (
+        <TransformControls
+          object={meshRef.current}
+          mode="translate"
+          showX={showX}
+          showY={showY}
+          showZ={showZ}
+          onMouseDown={handleMouseDown}
+          onMouseUp={handleMouseUp}
+        />
+      )}
+    </>
   );
 }
 
 // ── Custom cutout visualization ───────────────────────────────────────────────
 
-function CustomCutoutMesh({ cutout, enclosure, isSelected, onSelect }) {
+function CustomCutoutMesh({ cutout, enclosure, isSelected, onSelect, onMove, setOrbitEnabled }) {
+  const meshRef = useRef();
+
   if (!enclosure) return null;
 
   const w = cutout.width ?? 10;
@@ -318,70 +380,127 @@ function CustomCutoutMesh({ cutout, enclosure, isSelected, onSelect }) {
   const thickness = 2;
   const halfW = enclosure.w / 2;
   const halfD = enclosure.d / 2;
-  const halfH = enclosure.h / 2;
-  const centerY = halfH;
+  const centerY = enclosure.h / 2;
   const ox = cutout.offset_x ?? 0;
   const oy = cutout.offset_y ?? 0;
 
   let position, rotation;
+  let showX = true, showY = true, showZ = false;
+  let fixedAxis = "z", fixedValue = halfD;
+
   switch (cutout.face) {
     case "front":
       position = [ox, centerY + oy, halfD + 0.5];
       rotation = [0, 0, 0];
+      showX = true; showY = true; showZ = false;
+      fixedAxis = "z"; fixedValue = halfD + 0.5;
       break;
     case "back":
       position = [ox, centerY + oy, -halfD - 0.5];
       rotation = [0, 0, 0];
+      showX = true; showY = true; showZ = false;
+      fixedAxis = "z"; fixedValue = -halfD - 0.5;
       break;
     case "left":
       position = [-halfW - 0.5, centerY + oy, ox];
       rotation = [0, Math.PI / 2, 0];
+      showX = false; showY = true; showZ = true;
+      fixedAxis = "x"; fixedValue = -halfW - 0.5;
       break;
     case "right":
       position = [halfW + 0.5, centerY + oy, ox];
       rotation = [0, Math.PI / 2, 0];
+      showX = false; showY = true; showZ = true;
+      fixedAxis = "x"; fixedValue = halfW + 0.5;
       break;
     default:
       position = [ox, centerY + oy, halfD + 0.5];
       rotation = [0, 0, 0];
   }
 
-  const color = isSelected ? "#fbbf24" : "#f59e0b";
+  const handleMouseDown = useCallback(() => {
+    if (setOrbitEnabled) setOrbitEnabled(false);
+  }, [setOrbitEnabled]);
 
-  // Choose geometry based on shape
+  const handleMouseUp = useCallback(() => {
+    if (setOrbitEnabled) setOrbitEnabled(true);
+    if (!meshRef.current || !onMove) return;
+    const pos = meshRef.current.position;
+    let newOx, newOy;
+    if (cutout.face === "left" || cutout.face === "right") {
+      newOx = pos.z;
+      newOy = pos.y - centerY;
+      meshRef.current.position.x = fixedValue;
+    } else {
+      newOx = pos.x;
+      newOy = pos.y - centerY;
+      meshRef.current.position.z = fixedValue;
+    }
+    onMove(cutout.id, { offset_x: newOx, offset_y: newOy });
+  }, [cutout.id, cutout.face, centerY, fixedValue, onMove, setOrbitEnabled]);
+
+  const color = isSelected ? "#fbbf24" : "#f59e0b";
   const shape = cutout.shape;
-  let geo;
+
+  // Circle shape — use ring geometry
   if (shape === "circle") {
-    // Render as ring outline
-    const ringGeo = new THREE.RingGeometry(w / 2 - 0.5, w / 2, 32);
-    geo = <primitive object={ringGeo} />;
+    const ringGeo = useMemo(() => new THREE.RingGeometry(w / 2 - 0.5, w / 2, 32), [w]);
+    useEffect(() => () => ringGeo.dispose(), [ringGeo]);
     return (
+      <>
+        <mesh
+          ref={meshRef}
+          position={position}
+          rotation={rotation}
+          onClick={(e) => { e.stopPropagation(); onSelect && onSelect(cutout.id); }}
+        >
+          <primitive object={ringGeo} />
+          <meshBasicMaterial color={color} side={THREE.DoubleSide} />
+        </mesh>
+        {isSelected && meshRef.current && onMove && (
+          <TransformControls
+            object={meshRef.current}
+            mode="translate"
+            showX={showX}
+            showY={showY}
+            showZ={showZ}
+            onMouseDown={handleMouseDown}
+            onMouseUp={handleMouseUp}
+          />
+        )}
+      </>
+    );
+  }
+
+  // Rectangle / hexagon / triangle — box geometry
+  return (
+    <>
       <mesh
+        ref={meshRef}
         position={position}
         rotation={rotation}
         onClick={(e) => { e.stopPropagation(); onSelect && onSelect(cutout.id); }}
       >
-        <primitive object={ringGeo} />
-        <meshBasicMaterial color={color} side={THREE.DoubleSide} />
+        <boxGeometry args={[w, h, thickness]} />
+        <meshStandardMaterial
+          color={color}
+          transparent
+          opacity={0.75}
+          wireframe={shape !== "rectangle"}
+        />
       </mesh>
-    );
-  }
-
-  // For rectangle, hexagon, triangle: use box or line geometry
-  return (
-    <mesh
-      position={position}
-      rotation={rotation}
-      onClick={(e) => { e.stopPropagation(); onSelect && onSelect(cutout.id); }}
-    >
-      <boxGeometry args={[w, h, thickness]} />
-      <meshStandardMaterial
-        color={color}
-        transparent
-        opacity={0.75}
-        wireframe={shape !== "rectangle"}
-      />
-    </mesh>
+      {isSelected && meshRef.current && onMove && (
+        <TransformControls
+          object={meshRef.current}
+          mode="translate"
+          showX={showX}
+          showY={showY}
+          showZ={showZ}
+          onMouseDown={handleMouseDown}
+          onMouseUp={handleMouseUp}
+        />
+      )}
+    </>
   );
 }
 
@@ -448,21 +567,25 @@ function buildFootprintPoints(w, d, fp) {
 }
 
 function FootprintShape3D({ w, d, h, fp, color, wireframe }) {
-  const pts = buildFootprintPoints(w, d, fp);
+  // Compute geometry only when inputs actually change (fp by reference — new object = new footprint)
   const geometry = useMemo(() => {
+    const pts = buildFootprintPoints(w, d, fp);
     if (!pts) return null;
     const shape = new THREE.Shape();
-    // Note: in Three.js XZ plane, but we'll use XY then rotate
     shape.moveTo(pts[0][0], pts[0][1]);
     for (let i = 1; i < pts.length; i++) {
       shape.lineTo(pts[i][0], pts[i][1]);
     }
     shape.closePath();
     const geo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false });
-    // Rotate so Z becomes Y (height axis)
+    // Rotate so Z becomes Y (height axis), bottom at y=0
     geo.rotateX(-Math.PI / 2);
     return geo;
-  }, [pts, h]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [w, d, h, fp]);
+
+  // Dispose old geometry on unmount or when geometry changes
+  useEffect(() => () => { if (geometry) geometry.dispose(); }, [geometry]);
 
   if (!geometry) return null;
 
@@ -518,7 +641,7 @@ function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
         </mesh>
       )}
 
-      {/* Main enclosure outline */}
+      {/* Main enclosure outline — non-rect footprint or plain box */}
       {isNonRect ? (
         <FootprintShape3D
           w={enclosure.w}
@@ -574,7 +697,8 @@ function Scene({
   components, cutouts, customCutouts, config, parts,
   selectedId, selectedType, selectedPart,
   onSelectComponent, onSelectCutout, onSelectCustomCutout,
-  onComponentMove, viewMode, transformMode,
+  onComponentMove, onCutoutMove, onCustomCutoutMove,
+  viewMode, transformMode,
   triggerFrame, snapSize, footprint,
 }) {
   const [orbitEnabled, setOrbitEnabled] = useState(true);
@@ -606,8 +730,15 @@ function Scene({
         />
       ))}
 
-      {/* Enclosure outline */}
-      {enclosure && <EnclosureBox enclosure={enclosure} selectedPart={selectedPart} parts={parts} footprint={footprint} />}
+      {/* Enclosure outline — updates reactively with components & config */}
+      {enclosure && (
+        <EnclosureBox
+          enclosure={enclosure}
+          selectedPart={selectedPart}
+          parts={parts}
+          footprint={footprint}
+        />
+      )}
 
       {/* Connector cutout boxes on walls */}
       {enclosure && cutouts.map((co) => (
@@ -617,6 +748,8 @@ function Scene({
           enclosure={enclosure}
           isSelected={selectedId === co.id && selectedType === "cutout"}
           onSelect={onSelectCutout}
+          onMove={onCutoutMove}
+          setOrbitEnabled={setOrbitEnabled}
         />
       ))}
 
@@ -628,6 +761,8 @@ function Scene({
           enclosure={enclosure}
           isSelected={selectedId === cc.id && selectedType === "customCutout"}
           onSelect={onSelectCustomCutout}
+          onMove={onCustomCutoutMove}
+          setOrbitEnabled={setOrbitEnabled}
         />
       ))}
 
@@ -656,7 +791,7 @@ function Scene({
 
 // ── ViewToolbar ───────────────────────────────────────────────────────────────
 
-const SNAP_CYCLE = [0, 1, 2, 5]; // 0 = off
+const SNAP_CYCLE = [0, 1, 2, 5];
 function snapLabel(s) {
   if (s === 0) return "Snap: OFF";
   return `Snap: ${s}mm`;
@@ -695,7 +830,7 @@ function ViewToolbar({ viewMode, setViewMode, transformMode, setTransformMode, o
       <button
         className={`toolbar-btn${snapSize > 0 ? " active" : ""}`}
         onClick={onSnapCycle}
-        title="Cycle grid snap: OFF → 1mm → 2mm → 5mm"
+        title="Cycle grid snap: OFF -> 1mm -> 2mm -> 5mm"
         style={{ minWidth: 80 }}
       >
         {snapLabel(snapSize)}
@@ -712,7 +847,8 @@ function ViewToolbar({ viewMode, setViewMode, transformMode, setTransformMode, o
 export default function Viewport3D({
   components, cutouts, customCutouts, config, parts,
   selectedId, selectedType, selectedPart,
-  onSelectComponent, onSelectCutout, onSelectCustomCutout, onComponentMove,
+  onSelectComponent, onSelectCutout, onSelectCustomCutout,
+  onComponentMove, onCutoutMove, onCustomCutoutMove,
   viewMode, setViewMode,
   transformMode, setTransformMode,
   footprint,
@@ -758,6 +894,8 @@ export default function Viewport3D({
             onSelectCutout={onSelectCutout}
             onSelectCustomCutout={onSelectCustomCutout}
             onComponentMove={onComponentMove}
+            onCutoutMove={onCutoutMove}
+            onCustomCutoutMove={onCustomCutoutMove}
             viewMode={viewMode}
             transformMode={transformMode}
             triggerFrame={frameCounter}

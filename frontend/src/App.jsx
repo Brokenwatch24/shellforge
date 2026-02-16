@@ -171,6 +171,20 @@ export default function App() {
     }
   }
 
+  // ── Cutout position update (from TransformControls gizmo) ──────────────────
+
+  function updateCutout(id, patch) {
+    setCutouts((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
+    );
+  }
+
+  function updateCustomCutout(id, patch) {
+    setCustomCutouts((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
+    );
+  }
+
   // ── Selection ───────────────────────────────────────────────────────────────
 
   function selectComponent(id) {
@@ -443,6 +457,8 @@ export default function App() {
               onSelectCutout={selectCutout}
               onSelectCustomCutout={selectCustomCutout}
               onComponentMove={handleComponentMove}
+              onCutoutMove={updateCutout}
+              onCustomCutoutMove={updateCustomCutout}
               viewMode={viewMode}
               setViewMode={setViewMode}
               transformMode={transformMode}
