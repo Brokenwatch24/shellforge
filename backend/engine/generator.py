@@ -8,8 +8,8 @@ from typing import Optional
 import math
 
 from .models import (
-    EnclosureConfig, Component, ConnectorCutout,
-    LidStyle, WallFace, ConnectorType, Vector3
+    EnclosureConfig, Component, ConnectorCutout, CustomCutout,
+    LidStyle, WallFace, ConnectorType, CustomCutoutShape, Vector3
 )
 from ..connectors.profiles import get_profile
 
@@ -49,7 +49,7 @@ def load_component_bbox(component: Component) -> Component:
     return component
 
 
-def compute_combined_bbox(components: list[Component]) -> tuple[Vector3, Vector3]:
+def compute_combined_bbox(components: list) -> tuple:
     """
     Compute the combined bounding box of all components.
     Returns (bbox_min, bbox_max).
@@ -87,14 +87,10 @@ def _apply_connector_cutout(
 
     # Determine position and orientation based on face
     if face == WallFace.FRONT:
-        # Front face (+Y)
         pos_x = inner_center.x + cutout.offset_x
         pos_y = inner_center.y + inner_size.y / 2 + wall_thickness / 2
         pos_z = inner_center.z + cutout.offset_y
-        wp = (
-            cq.Workplane("XZ")
-            .transformed(offset=(pos_x, pos_z, pos_y))
-        )
+        wp = cq.Workplane("XZ").transformed(offset=(pos_x, pos_z, pos_y))
         if is_round:
             cut = wp.circle(profile["diameter"] / 2).extrude(cut_d, both=True)
         else:
@@ -104,10 +100,7 @@ def _apply_connector_cutout(
         pos_x = inner_center.x + cutout.offset_x
         pos_y = inner_center.y - inner_size.y / 2 - wall_thickness / 2
         pos_z = inner_center.z + cutout.offset_y
-        wp = (
-            cq.Workplane("XZ")
-            .transformed(offset=(pos_x, pos_z, pos_y))
-        )
+        wp = cq.Workplane("XZ").transformed(offset=(pos_x, pos_z, pos_y))
         if is_round:
             cut = wp.circle(profile["diameter"] / 2).extrude(cut_d, both=True)
         else:
@@ -117,10 +110,7 @@ def _apply_connector_cutout(
         pos_x = inner_center.x + inner_size.x / 2 + wall_thickness / 2
         pos_y = inner_center.y + cutout.offset_x
         pos_z = inner_center.z + cutout.offset_y
-        wp = (
-            cq.Workplane("YZ")
-            .transformed(offset=(pos_y, pos_z, pos_x))
-        )
+        wp = cq.Workplane("YZ").transformed(offset=(pos_y, pos_z, pos_x))
         if is_round:
             cut = wp.circle(profile["diameter"] / 2).extrude(cut_d, both=True)
         else:
@@ -130,21 +120,282 @@ def _apply_connector_cutout(
         pos_x = inner_center.x - inner_size.x / 2 - wall_thickness / 2
         pos_y = inner_center.y + cutout.offset_x
         pos_z = inner_center.z + cutout.offset_y
-        wp = (
-            cq.Workplane("YZ")
-            .transformed(offset=(pos_y, pos_z, pos_x))
-        )
+        wp = cq.Workplane("YZ").transformed(offset=(pos_y, pos_z, pos_x))
         if is_round:
             cut = wp.circle(profile["diameter"] / 2).extrude(cut_d, both=True)
         else:
             cut = wp.rect(cut_w, cut_h).extrude(cut_d, both=True)
 
     else:
-        # TOP or BOTTOM - skip for now
         return shell
 
     shell = shell.cut(cut)
     return shell
+
+
+def _apply_custom_cutout(
+    shell: cq.Workplane,
+    cutout: CustomCutout,
+    inner_size: Vector3,
+    wall_thickness: float,
+    inner_center: Vector3,
+) -> cq.Workplane:
+    """Apply a single custom cutout to the shell."""
+    w = cutout.width
+    h = cutout.height
+    cut_d = cutout.depth if cutout.depth > 0 else wall_thickness + 2
+    face = cutout.face
+    shape = cutout.shape
+    rot = cutout.rotation
+
+    def make_profile(wp, shape, w, h):
+        if shape == CustomCutoutShape.RECTANGLE:
+            return wp.rect(w, h)
+        elif shape == CustomCutoutShape.CIRCLE:
+            return wp.circle(w / 2)
+        elif shape == CustomCutoutShape.HEXAGON:
+            return wp.polygon(6, w / 2)
+        elif shape == CustomCutoutShape.TRIANGLE:
+            return wp.polygon(3, w / 2)
+        else:
+            return wp.rect(w, h)
+
+    try:
+        if face == WallFace.FRONT:
+            pos_x = inner_center.x + cutout.offset_x
+            pos_y = inner_center.y + inner_size.y / 2 + wall_thickness / 2
+            pos_z = inner_center.z + cutout.offset_y
+            wp = cq.Workplane("XZ").transformed(offset=(pos_x, pos_z, pos_y), rotate=(0, rot, 0))
+            cut = make_profile(wp, shape, w, h).extrude(cut_d, both=True)
+
+        elif face == WallFace.BACK:
+            pos_x = inner_center.x + cutout.offset_x
+            pos_y = inner_center.y - inner_size.y / 2 - wall_thickness / 2
+            pos_z = inner_center.z + cutout.offset_y
+            wp = cq.Workplane("XZ").transformed(offset=(pos_x, pos_z, pos_y), rotate=(0, rot, 0))
+            cut = make_profile(wp, shape, w, h).extrude(cut_d, both=True)
+
+        elif face == WallFace.RIGHT:
+            pos_x = inner_center.x + inner_size.x / 2 + wall_thickness / 2
+            pos_y = inner_center.y + cutout.offset_x
+            pos_z = inner_center.z + cutout.offset_y
+            wp = cq.Workplane("YZ").transformed(offset=(pos_y, pos_z, pos_x), rotate=(rot, 0, 0))
+            cut = make_profile(wp, shape, w, h).extrude(cut_d, both=True)
+
+        elif face == WallFace.LEFT:
+            pos_x = inner_center.x - inner_size.x / 2 - wall_thickness / 2
+            pos_y = inner_center.y + cutout.offset_x
+            pos_z = inner_center.z + cutout.offset_y
+            wp = cq.Workplane("YZ").transformed(offset=(pos_y, pos_z, pos_x), rotate=(rot, 0, 0))
+            cut = make_profile(wp, shape, w, h).extrude(cut_d, both=True)
+
+        else:
+            return shell
+
+        shell = shell.cut(cut)
+    except Exception as e:
+        print(f"Warning: Could not apply custom cutout ({shape}): {e}")
+
+    return shell
+
+
+def _apply_enclosure_style(
+    base: cq.Workplane,
+    style: str,
+    outer_w: float,
+    outer_d: float,
+    outer_h: float,
+    wall: float,
+    floor: float,
+) -> cq.Workplane:
+    """Apply enclosure style post-processing (vented, ribbed)."""
+    if style == "vented":
+        slot_w = 2.0
+        slot_h = outer_h * 0.6
+        slot_z = outer_h / 2
+        spacing = 8.0
+
+        # Front/back walls — slots along X
+        for y_sign in [1, -1]:
+            wall_y = y_sign * outer_d / 2
+            x = -outer_w / 2 + 4.0
+            while x < outer_w / 2 - 4.0:
+                try:
+                    slot = (
+                        cq.Workplane("XY")
+                        .box(slot_w, wall + 2, slot_h)
+                        .translate((x, wall_y, slot_z))
+                    )
+                    base = base.cut(slot)
+                except Exception:
+                    pass
+                x += spacing
+
+        # Left/right walls — slots along Y
+        for x_sign in [1, -1]:
+            wall_x = x_sign * outer_w / 2
+            y = -outer_d / 2 + 4.0
+            while y < outer_d / 2 - 4.0:
+                try:
+                    slot = (
+                        cq.Workplane("XY")
+                        .box(wall + 2, slot_w, slot_h)
+                        .translate((wall_x, y, slot_z))
+                    )
+                    base = base.cut(slot)
+                except Exception:
+                    pass
+                y += spacing
+
+    elif style == "ribbed":
+        rib_h = 3.0
+        rib_d = 1.5
+        rib_spacing = 15.0
+        z = floor + rib_h / 2
+        while z < outer_h - rib_h / 2:
+            try:
+                # Front/back ribs
+                for y_side in [1, -1]:
+                    rib = (
+                        cq.Workplane("XY")
+                        .box(outer_w + rib_d * 2, rib_d, rib_h)
+                        .translate((0, y_side * (outer_d / 2 + rib_d / 2), z))
+                    )
+                    base = base.union(rib)
+                # Left/right ribs
+                for x_side in [1, -1]:
+                    rib = (
+                        cq.Workplane("XY")
+                        .box(rib_d, outer_d + rib_d * 2, rib_h)
+                        .translate((x_side * (outer_w / 2 + rib_d / 2), 0, z))
+                    )
+                    base = base.union(rib)
+            except Exception:
+                pass
+            z += rib_spacing
+
+    return base
+
+
+def _add_pcb_standoffs(
+    base: cq.Workplane,
+    components: list,
+    cavity_center_x: float,
+    cavity_center_y: float,
+    floor: float,
+) -> cq.Workplane:
+    """Add PCB standoffs for components with is_pcb=True."""
+    for comp in components:
+        if not comp.is_pcb:
+            continue
+        gz = comp.ground_z
+        if gz <= 0:
+            continue
+
+        outer_r = comp.pcb_screw_diameter * 2.5 / 2
+        inner_r = comp.pcb_screw_diameter / 2
+        standoff_h = gz
+
+        # Component center in CadQuery XY space
+        cq_cx = comp.position.x - cavity_center_x
+        cq_cy = comp.position.y - cavity_center_y
+
+        if comp.standoff_positions:
+            positions = [(p["x"] + cq_cx, p["y"] + cq_cy) for p in comp.standoff_positions]
+        else:
+            # Auto-place at 4 corners, inset 3mm from component edges
+            half_w = (comp.bbox_max.x - comp.bbox_min.x) / 2
+            half_d = (comp.bbox_max.y - comp.bbox_min.y) / 2
+            inset = 3.0
+            hw = max(half_w - inset, 1.0)
+            hd = max(half_d - inset, 1.0)
+            positions = [
+                (cq_cx + hw, cq_cy + hd),
+                (cq_cx + hw, cq_cy - hd),
+                (cq_cx - hw, cq_cy + hd),
+                (cq_cx - hw, cq_cy - hd),
+            ]
+
+        for (sx, sy) in positions:
+            try:
+                standoff = (
+                    cq.Workplane("XY")
+                    .cylinder(standoff_h, outer_r)
+                    .translate((sx, sy, floor + standoff_h / 2))
+                )
+                drill = (
+                    cq.Workplane("XY")
+                    .cylinder(standoff_h + 1, inner_r)
+                    .translate((sx, sy, floor + standoff_h / 2))
+                )
+                base = base.union(standoff).cut(drill)
+            except Exception as e:
+                print(f"Warning: PCB standoff skipped at ({sx:.1f},{sy:.1f}): {e}")
+
+    return base
+
+
+def _build_lid_screws(
+    lid: cq.Workplane,
+    lid_style: str,
+    lid_hole_style: str,
+    lid_t: float,
+    screw_r: float,
+    inner_w: float,
+    inner_d: float,
+    boss_diameter: float,
+    wall: float,
+) -> cq.Workplane:
+    """Apply screw holes to the lid according to lid_hole_style."""
+    if lid_style != "screws":
+        return lid
+
+    inset = boss_diameter / 2 + wall
+
+    for sx, sy in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+        bx = sx * (inner_w / 2 - inset)
+        by = sy * (inner_d / 2 - inset)
+
+        if lid_hole_style == "closed":
+            pass  # no hole
+
+        elif lid_hole_style == "countersunk":
+            # Wider pocket at top for screw head, then narrow shaft
+            head_r = screw_r * 1.8
+            pocket_depth = min(2.0, lid_t - 0.5)
+            shaft_depth = lid_t - pocket_depth - 0.3  # leave 0.3mm floor
+            if shaft_depth <= 0:
+                # lid too thin, fall back to through
+                hole = (
+                    cq.Workplane("XY")
+                    .cylinder(lid_t + 1, screw_r)
+                    .translate((bx, by, lid_t / 2))
+                )
+                lid = lid.cut(hole)
+            else:
+                # Countersink pocket from top
+                pocket = (
+                    cq.Workplane("XY")
+                    .cylinder(pocket_depth + 1, head_r)
+                    .translate((bx, by, lid_t - pocket_depth / 2))
+                )
+                # Shaft hole from bottom (not breaking through)
+                shaft = (
+                    cq.Workplane("XY")
+                    .cylinder(shaft_depth + 1, screw_r)
+                    .translate((bx, by, shaft_depth / 2))
+                )
+                lid = lid.cut(pocket).cut(shaft)
+
+        else:  # "through" — default
+            hole = (
+                cq.Workplane("XY")
+                .cylinder(lid_t + 1, screw_r)
+                .translate((bx, by, lid_t / 2))
+            )
+            lid = lid.cut(hole)
+
+    return lid
 
 
 def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") -> dict:
@@ -160,6 +411,17 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    # --- 0. Apply enclosure style overrides ---
+    style = config.enclosure_style
+    if style == "minimal":
+        wall = 1.8
+        eff_fillet = 0.0
+    else:
+        wall = config.wall_thickness
+        eff_fillet = config.fillet_radius
+        if style == "rounded":
+            eff_fillet = 3.0
+
     # --- 1. Load all components and compute bboxes ---
     loaded = []
     for comp in config.components:
@@ -168,6 +430,9 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
     # --- 2. Combined bounding box ---
     bbox_min, bbox_max = compute_combined_bbox(loaded)
 
+    cavity_center_x = (bbox_min.x + bbox_max.x) / 2
+    cavity_center_y = (bbox_min.y + bbox_max.y) / 2
+
     # Inner cavity dimensions (components + padding)
     inner_w = (bbox_max.x - bbox_min.x) + config.padding_x * 2
     inner_d = (bbox_max.y - bbox_min.y) + config.padding_y * 2
@@ -175,11 +440,10 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
 
     inner_size = Vector3(inner_w, inner_d, inner_h)
 
-    wall = config.wall_thickness
     floor = config.floor_thickness
     lid_t = config.lid_thickness
 
-    # Outer dimensions
+    # Use effective wall (may be overridden by style)
     outer_w = inner_w + wall * 2
     outer_d = inner_d + wall * 2
     outer_h = inner_h + floor  # floor at bottom, open top (lid closes it)
@@ -187,15 +451,16 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
     # Center of inner cavity
     inner_center = Vector3(0, 0, floor + inner_h / 2)
 
+    # Boss height from screw_length
+    boss_h = max(config.screw_length - lid_t, 3.0)
+
     # --- 3. Build the base shell ---
-    # Outer box
     base = (
         cq.Workplane("XY")
         .box(outer_w, outer_d, outer_h)
         .translate((0, 0, outer_h / 2))
     )
 
-    # Subtract inner cavity (from top, leaving floor)
     cavity = (
         cq.Workplane("XY")
         .box(inner_w, inner_d, inner_h)
@@ -203,21 +468,18 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
     )
     base = base.cut(cavity)
 
-    # Fillet outer edges (if radius > 0)
-    if config.fillet_radius > 0:
+    if eff_fillet > 0:
         try:
-            base = base.edges("|Z").fillet(config.fillet_radius)
+            base = base.edges("|Z").fillet(eff_fillet)
         except Exception:
-            pass  # skip fillet if geometry doesn't support it
+            pass
 
-    # --- 4. Add screw bosses (for SCREWS lid style) ---
-    if config.lid_style == LidStyle.SCREWS:
+    # --- 4. Add screw bosses (for SCREWS lid style, not minimal) ---
+    if config.lid_style == LidStyle.SCREWS and style != "minimal":
         boss_r = config.boss_diameter / 2
         screw_r = config.screw_diameter / 2
-        boss_h = config.boss_height
         inset = boss_r + wall
 
-        # Four corners inside the base
         for sx, sy in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
             bx = sx * (inner_w / 2 - inset)
             by = sy * (inner_d / 2 - inset)
@@ -233,61 +495,67 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
             )
             base = base.union(boss).cut(screw_hole)
 
-    # --- 5. Apply connector cutouts to base ---
+    # --- 5. Add PCB standoffs ---
+    if config.pcb_standoffs_enabled:
+        base = _add_pcb_standoffs(base, loaded, cavity_center_x, cavity_center_y, floor)
+
+    # --- 6. Apply connector cutouts to base ---
     for cutout in config.cutouts:
         try:
             base = _apply_connector_cutout(base, cutout, inner_size, wall, inner_center)
         except Exception as e:
             print(f"Warning: Could not apply cutout {cutout.connector_type}: {e}")
 
-    # --- 6. Export base ---
+    # --- 7. Apply custom cutouts to base ---
+    for cutout in config.custom_cutouts:
+        base = _apply_custom_cutout(base, cutout, inner_size, wall, inner_center)
+
+    # --- 8. Apply enclosure style (vented/ribbed) ---
+    base = _apply_enclosure_style(base, style, outer_w, outer_d, outer_h, wall, floor)
+
+    # --- 9. Export base ---
     base_path = output_path / "enclosure_base.stl"
     cq.exporters.export(base, str(base_path))
     result = {"base": str(base_path)}
 
-    # --- 7. Generate lid ---
+    # --- 10. Generate lid ---
     if config.lid_style != LidStyle.NONE:
         if config.lid_style == LidStyle.SCREWS:
-            # Flat lid with screw holes aligned to bosses
             lid = (
                 cq.Workplane("XY")
                 .box(outer_w, outer_d, lid_t)
                 .translate((0, 0, lid_t / 2))
             )
-            if config.fillet_radius > 0:
+            if eff_fillet > 0:
                 try:
-                    lid = lid.edges("|Z").fillet(config.fillet_radius)
+                    lid = lid.edges("|Z").fillet(eff_fillet)
                 except Exception:
                     pass
 
-            inset = config.boss_diameter / 2 + wall
-            screw_r = config.screw_diameter / 2
-
-            for sx, sy in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
-                bx = sx * (inner_w / 2 - inset)
-                by = sy * (inner_d / 2 - inset)
-                hole = (
-                    cq.Workplane("XY")
-                    .cylinder(lid_t + 1, screw_r)
-                    .translate((bx, by, lid_t / 2))
-                )
-                lid = lid.cut(hole)
+            lid = _build_lid_screws(
+                lid,
+                lid_style="screws",
+                lid_hole_style=config.lid_hole_style,
+                lid_t=lid_t,
+                screw_r=config.screw_diameter / 2,
+                inner_w=inner_w,
+                inner_d=inner_d,
+                boss_diameter=config.boss_diameter,
+                wall=wall,
+            )
 
         elif config.lid_style == LidStyle.SNAP:
-            # Lid with snap tabs on the inside perimeter
             lid = (
                 cq.Workplane("XY")
                 .box(outer_w, outer_d, lid_t)
                 .translate((0, 0, lid_t / 2))
             )
-            # Add inner rim to snap into box opening
             rim_h = config.snap_depth * 2
             rim = (
                 cq.Workplane("XY")
                 .box(inner_w, inner_d, rim_h)
                 .translate((0, 0, lid_t + rim_h / 2))
             )
-            # Hollow the rim
             rim_inner = (
                 cq.Workplane("XY")
                 .box(inner_w - wall * 2, inner_d - wall * 2, rim_h + 1)
@@ -299,5 +567,5 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
         cq.exporters.export(lid, str(lid_path))
         result["lid"] = str(lid_path)
 
-    print(f"✅ Enclosure generated: {result}")
+    print(f"[OK] Enclosure generated: {result}")
     return result

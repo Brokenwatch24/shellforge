@@ -3,6 +3,7 @@ import FileImport from "./components/FileImport";
 import ComponentForm from "./components/ComponentForm";
 import ComponentsList from "./components/ComponentsList";
 import ConnectorForm from "./components/ConnectorForm";
+import CustomCutoutForm from "./components/CustomCutoutForm";
 import EnclosureConfigPanel from "./components/EnclosureConfig";
 import Viewport3D from "./components/Viewport3D";
 import { fetchConnectors, generateEnclosure, downloadUrl } from "./api";
@@ -18,13 +19,18 @@ const DEFAULT_CONFIG = {
   lid_style: "screws",
   fillet_radius: 1.5,
   screw_diameter: 3,
+  screw_length: 12,
+  lid_hole_style: "countersunk",
+  enclosure_style: "classic",
+  pcb_standoffs_enabled: true,
 };
 
 export default function App() {
   const [components, setComponents] = useState([]);
   const [cutouts, setCutouts] = useState([]);
+  const [customCutouts, setCustomCutouts] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  const [selectedType, setSelectedType] = useState(null); // 'component' | 'cutout'
+  const [selectedType, setSelectedType] = useState(null); // 'component' | 'cutout' | 'customCutout'
   const [viewMode, setViewMode] = useState("both"); // solid | wireframe | both
   const [transformMode, setTransformMode] = useState("translate");
   const [config, setConfig] = useState(DEFAULT_CONFIG);
@@ -56,6 +62,10 @@ export default function App() {
         rotY: 0,
         visible: true,
         stl_url: comp.stl_url ?? null,
+        job_id: comp.job_id ?? null,
+        is_pcb: comp.is_pcb ?? false,
+        pcb_screw_diameter: comp.pcb_screw_diameter ?? 3.0,
+        standoff_positions: comp.standoff_positions ?? [],
       },
     ]);
     setResult(null);
@@ -96,6 +106,20 @@ export default function App() {
     }
   }
 
+  // ── Custom cutout handlers ─────────────────────────────────────────────────
+
+  function addCustomCutout(cc) {
+    setCustomCutouts((prev) => [...prev, { id: crypto.randomUUID(), ...cc }]);
+  }
+
+  function removeCustomCutout(id) {
+    setCustomCutouts((prev) => prev.filter((c) => c.id !== id));
+    if (selectedId === id) {
+      setSelectedId(null);
+      setSelectedType(null);
+    }
+  }
+
   // ── Selection ───────────────────────────────────────────────────────────────
 
   function selectComponent(id) {
@@ -108,6 +132,11 @@ export default function App() {
     setSelectedType(id ? "cutout" : null);
   }
 
+  function selectCustomCutout(id) {
+    setSelectedId(id);
+    setSelectedType(id ? "customCutout" : null);
+  }
+
   // ── Import handler ──────────────────────────────────────────────────────────
 
   function handleImported(data) {
@@ -117,6 +146,7 @@ export default function App() {
       depth: data.depth,
       height: data.height,
       stl_url: data.stl_url,
+      job_id: data.job_id,
     });
   }
 
@@ -139,13 +169,23 @@ export default function App() {
     try {
       // Map ground_z back to z for the backend
       const compsForBackend = components.map((c) => ({
-        ...c,
+        name: c.name,
+        width: c.width,
+        depth: c.depth,
+        height: c.height,
+        x: c.x ?? 0,
+        y: c.y ?? 0,
         z: c.ground_z ?? 0,
+        ground_z: c.ground_z ?? 0,
+        is_pcb: c.is_pcb ?? false,
+        pcb_screw_diameter: c.pcb_screw_diameter ?? 3.0,
+        standoff_positions: c.standoff_positions ?? [],
       }));
       const data = await generateEnclosure({
         ...config,
         components: compsForBackend,
         cutouts,
+        custom_cutouts: customCutouts,
       });
       setResult(data);
     } catch (e) {
@@ -182,13 +222,17 @@ export default function App() {
             <ComponentsList
               components={components}
               cutouts={cutouts}
+              customCutouts={customCutouts}
               selectedId={selectedId}
               selectedType={selectedType}
               onSelectComponent={selectComponent}
               onSelectCutout={selectCutout}
+              onSelectCustomCutout={selectCustomCutout}
               onToggleVisible={toggleVisible}
               onRemoveComponent={removeComponent}
               onRemoveCutout={removeCutout}
+              onRemoveCustomCutout={removeCustomCutout}
+              onUpdateComponent={updateComponent}
             />
 
             <div className="panel">
@@ -199,6 +243,10 @@ export default function App() {
                   Backend not running. Start with <code>.\start.ps1</code>
                 </p>
               )}
+            </div>
+
+            <div className="panel">
+              <CustomCutoutForm onAdd={addCustomCutout} />
             </div>
 
             <div className="panel">
@@ -267,11 +315,13 @@ export default function App() {
             <Viewport3D
               components={components}
               cutouts={cutouts}
+              customCutouts={customCutouts}
               config={config}
               selectedId={selectedId}
               selectedType={selectedType}
               onSelectComponent={selectComponent}
               onSelectCutout={selectCutout}
+              onSelectCustomCutout={selectCustomCutout}
               onComponentMove={handleComponentMove}
               viewMode={viewMode}
               setViewMode={setViewMode}

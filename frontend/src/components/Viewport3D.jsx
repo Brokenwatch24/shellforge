@@ -110,6 +110,32 @@ function BoxContent({ width, height, depth, color, viewMode }) {
   );
 }
 
+// ── Elevation dashed line (ground_z indicator) ────────────────────────────────
+
+function ElevationLine({ x, z, groundZ, color }) {
+  if (!groundZ || groundZ <= 0) return null;
+
+  const points = useMemo(() => {
+    // In Three.js: Y is up, X is right, Z is front-back
+    // Component ground is at threeY = groundZ, floor is at threeY = 0
+    return [
+      new THREE.Vector3(x, 0, z),
+      new THREE.Vector3(x, groundZ, z),
+    ];
+  }, [x, z, groundZ]);
+
+  const geometry = useMemo(() => {
+    const geo = new THREE.BufferGeometry().setFromPoints(points);
+    return geo;
+  }, [points]);
+
+  return (
+    <line geometry={geometry}>
+      <lineDashedMaterial color={color} dashSize={2} gapSize={1} linewidth={1} />
+    </line>
+  );
+}
+
 // ── Single component in scene ─────────────────────────────────────────────────
 
 function ComponentObject({
@@ -125,7 +151,7 @@ function ComponentObject({
   const threeZ = comp.y ?? 0;
   const rotY   = comp.rotY ?? 0;
 
-  // Sync position from state (only when not dragging, to avoid fighting the gizmo)
+  // Sync position from state (only when not dragging)
   useEffect(() => {
     if (!isDragging && groupRef.current) {
       groupRef.current.position.set(threeX, threeY, threeZ);
@@ -146,8 +172,8 @@ function ComponentObject({
       const r = groupRef.current.rotation;
       onMove(comp.id, {
         x: p.x,
-        y: p.z,   // Three.js Z → engineering Y
-        ground_z: p.y - comp.height / 2,
+        y: p.z,              // Three.js Z → engineering Y
+        ground_z: Math.max(0, p.y - comp.height / 2),  // Three.js Y → ground_z
         rotY: r.y,
       });
     }
@@ -183,10 +209,17 @@ function ComponentObject({
 
   return (
     <>
-      {/* The actual mesh group — positioned imperatively via useEffect */}
+      {/* Elevation indicator line */}
+      <ElevationLine
+        x={threeX}
+        z={threeZ}
+        groundZ={comp.ground_z ?? 0}
+        color={color}
+      />
+
+      {/* The actual mesh group */}
       <group ref={groupRef} onClick={handleClick}>
         {content}
-        {/* Selection highlight */}
         {isSelected && (
           <mesh>
             <boxGeometry args={[comp.width + 1, comp.height + 1, comp.depth + 1]} />
@@ -195,7 +228,6 @@ function ComponentObject({
         )}
       </group>
 
-      {/* TransformControls — only rendered when selected, attaches to groupRef */}
       {isSelected && groupRef.current && (
         <TransformControls
           object={groupRef.current}
@@ -255,7 +287,6 @@ function CutoutBox({ cutout, enclosure, isSelected, onSelect }) {
   }
 
   const color = isSelected ? "#facc15" : "#94a3b8";
-
   return (
     <mesh
       position={position}
@@ -264,6 +295,83 @@ function CutoutBox({ cutout, enclosure, isSelected, onSelect }) {
     >
       <boxGeometry args={dims} />
       <meshStandardMaterial color={color} transparent opacity={0.85} />
+    </mesh>
+  );
+}
+
+// ── Custom cutout visualization ───────────────────────────────────────────────
+
+function CustomCutoutMesh({ cutout, enclosure, isSelected, onSelect }) {
+  if (!enclosure) return null;
+
+  const w = cutout.width ?? 10;
+  const h = cutout.height ?? 10;
+  const thickness = 2;
+  const halfW = enclosure.w / 2;
+  const halfD = enclosure.d / 2;
+  const halfH = enclosure.h / 2;
+  const centerY = halfH;
+  const ox = cutout.offset_x ?? 0;
+  const oy = cutout.offset_y ?? 0;
+
+  let position, rotation;
+  switch (cutout.face) {
+    case "front":
+      position = [ox, centerY + oy, halfD + 0.5];
+      rotation = [0, 0, 0];
+      break;
+    case "back":
+      position = [ox, centerY + oy, -halfD - 0.5];
+      rotation = [0, 0, 0];
+      break;
+    case "left":
+      position = [-halfW - 0.5, centerY + oy, ox];
+      rotation = [0, Math.PI / 2, 0];
+      break;
+    case "right":
+      position = [halfW + 0.5, centerY + oy, ox];
+      rotation = [0, Math.PI / 2, 0];
+      break;
+    default:
+      position = [ox, centerY + oy, halfD + 0.5];
+      rotation = [0, 0, 0];
+  }
+
+  const color = isSelected ? "#fbbf24" : "#f59e0b";
+
+  // Choose geometry based on shape
+  const shape = cutout.shape;
+  let geo;
+  if (shape === "circle") {
+    // Render as ring outline
+    const ringGeo = new THREE.RingGeometry(w / 2 - 0.5, w / 2, 32);
+    geo = <primitive object={ringGeo} />;
+    return (
+      <mesh
+        position={position}
+        rotation={rotation}
+        onClick={(e) => { e.stopPropagation(); onSelect && onSelect(cutout.id); }}
+      >
+        <primitive object={ringGeo} />
+        <meshBasicMaterial color={color} side={THREE.DoubleSide} />
+      </mesh>
+    );
+  }
+
+  // For rectangle, hexagon, triangle: use box or line geometry
+  return (
+    <mesh
+      position={position}
+      rotation={rotation}
+      onClick={(e) => { e.stopPropagation(); onSelect && onSelect(cutout.id); }}
+    >
+      <boxGeometry args={[w, h, thickness]} />
+      <meshStandardMaterial
+        color={color}
+        transparent
+        opacity={0.75}
+        wireframe={shape !== "rectangle"}
+      />
     </mesh>
   );
 }
@@ -284,7 +392,6 @@ function EnclosureBox({ enclosure }) {
 
 function CameraFramer({ triggerFrame, enclosure }) {
   const { camera } = useThree();
-  // Get orbit controls via a ref passed from Scene
   const prevTrigger = useRef(0);
 
   useEffect(() => {
@@ -314,9 +421,9 @@ function CameraFramer({ triggerFrame, enclosure }) {
 // ── Scene ─────────────────────────────────────────────────────────────────────
 
 function Scene({
-  components, cutouts, config,
+  components, cutouts, customCutouts, config,
   selectedId, selectedType,
-  onSelectComponent, onSelectCutout,
+  onSelectComponent, onSelectCutout, onSelectCustomCutout,
   onComponentMove, viewMode, transformMode,
   triggerFrame,
 }) {
@@ -351,7 +458,7 @@ function Scene({
       {/* Enclosure outline */}
       {enclosure && <EnclosureBox enclosure={enclosure} />}
 
-      {/* Cutout boxes on walls */}
+      {/* Connector cutout boxes on walls */}
       {enclosure && cutouts.map((co) => (
         <CutoutBox
           key={co.id}
@@ -359,6 +466,17 @@ function Scene({
           enclosure={enclosure}
           isSelected={selectedId === co.id && selectedType === "cutout"}
           onSelect={onSelectCutout}
+        />
+      ))}
+
+      {/* Custom cutouts on walls */}
+      {enclosure && customCutouts && customCutouts.map((cc) => (
+        <CustomCutoutMesh
+          key={cc.id}
+          cutout={cc}
+          enclosure={enclosure}
+          isSelected={selectedId === cc.id && selectedType === "customCutout"}
+          onSelect={onSelectCustomCutout}
         />
       ))}
 
@@ -407,18 +525,18 @@ function ViewToolbar({ viewMode, setViewMode, transformMode, setTransformMode, o
           onClick={() => setTransformMode("translate")}
           title="Move selected component"
         >
-          ↔ Move
+          Move
         </button>
         <button
           className={`toolbar-btn${transformMode === "rotate" ? " active" : ""}`}
           onClick={() => setTransformMode("rotate")}
           title="Rotate selected component"
         >
-          ↻ Rotate
+          Rotate
         </button>
       </div>
       <button className="toolbar-btn frame-btn" onClick={onFrameAll} title="Reset camera to fit all">
-        ⊡ Frame
+        Frame
       </button>
     </div>
   );
@@ -427,9 +545,9 @@ function ViewToolbar({ viewMode, setViewMode, transformMode, setTransformMode, o
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export default function Viewport3D({
-  components, cutouts, config,
+  components, cutouts, customCutouts, config,
   selectedId, selectedType,
-  onSelectComponent, onSelectCutout, onComponentMove,
+  onSelectComponent, onSelectCutout, onSelectCustomCutout, onComponentMove,
   viewMode, setViewMode,
   transformMode, setTransformMode,
 }) {
@@ -454,11 +572,13 @@ export default function Viewport3D({
           <Scene
             components={components}
             cutouts={cutouts}
+            customCutouts={customCutouts || []}
             config={config}
             selectedId={selectedId}
             selectedType={selectedType}
             onSelectComponent={onSelectComponent}
             onSelectCutout={onSelectCutout}
+            onSelectCustomCutout={onSelectCustomCutout}
             onComponentMove={onComponentMove}
             viewMode={viewMode}
             transformMode={transformMode}

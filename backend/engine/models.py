@@ -34,6 +34,13 @@ class LidStyle(str, Enum):
     NONE = "none"
 
 
+class CustomCutoutShape(str, Enum):
+    RECTANGLE = "rectangle"
+    CIRCLE = "circle"
+    HEXAGON = "hexagon"
+    TRIANGLE = "triangle"
+
+
 @dataclass
 class Vector3:
     x: float = 0.0
@@ -52,6 +59,12 @@ class Component:
     # Bounding box (computed after loading the model)
     bbox_min: Optional[Vector3] = None
     bbox_max: Optional[Vector3] = None
+
+    # PCB / height fields
+    is_pcb: bool = False
+    pcb_screw_diameter: float = 3.0
+    ground_z: float = 0.0
+    standoff_positions: list = field(default_factory=list)  # [{x, y}] component-local coords
 
     @property
     def size(self) -> Optional[Vector3]:
@@ -77,6 +90,19 @@ class ConnectorCutout:
 
 
 @dataclass
+class CustomCutout:
+    """A custom-shaped hole to cut into one of the enclosure walls."""
+    shape: CustomCutoutShape
+    face: WallFace
+    width: float          # mm
+    height: float         # mm (= diameter for circle)
+    depth: float          # how deep to cut (0 = auto: wall_thickness + 2)
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+    rotation: float = 0.0  # degrees
+
+
+@dataclass
 class EnclosureConfig:
     """Configuration for generating the enclosure."""
     # Padding around components (mm)
@@ -97,6 +123,10 @@ class EnclosureConfig:
     boss_diameter: float = 7.0
     boss_height: float = 5.0
 
+    # Screw length determines boss height
+    screw_length: float = 12.0
+    lid_hole_style: str = "countersunk"  # "through" | "countersunk" | "closed"
+
     # Snap fit settings (for SNAP lid style)
     snap_depth: float = 1.5
     snap_width: float = 8.0
@@ -104,6 +134,13 @@ class EnclosureConfig:
     # Fillet radius (rounded edges), 0 = sharp
     fillet_radius: float = 1.5
 
+    # Enclosure style
+    enclosure_style: str = "classic"  # "classic" | "vented" | "rounded" | "ribbed" | "minimal"
+
+    # PCB standoffs
+    pcb_standoffs_enabled: bool = True
+
     # Components and cutouts
     components: list = field(default_factory=list)
     cutouts: list = field(default_factory=list)
+    custom_cutouts: list = field(default_factory=list)

@@ -10,7 +10,8 @@ from fastapi.responses import FileResponse
 
 from .schemas import EnclosureRequestSchema, EnclosureResponseSchema
 from ..engine.models import (
-    EnclosureConfig, ConnectorCutout, LidStyle, WallFace, ConnectorType
+    EnclosureConfig, ConnectorCutout, CustomCutout,
+    LidStyle, WallFace, ConnectorType, CustomCutoutShape
 )
 from ..engine.bbox_only import generate_from_manual_bbox
 from ..connectors.profiles import list_connectors
@@ -106,6 +107,84 @@ def get_model_stl(job_id: str):
     )
 
 
+@router.post("/detect-holes/{job_id}", summary="Detect mounting holes in imported STEP model")
+def detect_mounting_holes(
+    job_id: str,
+    min_diameter: float = 1.5,
+    max_diameter: float = 5.0
+):
+    """
+    Detect cylindrical mounting holes in an imported STEP model.
+    Returns list of {x, y, diameter} positions.
+    """
+    # Look for the original STEP file
+    step_path = None
+    for ext in (".step", ".stp"):
+        candidate = IMPORTS_DIR / job_id / f"original{ext}"
+        if candidate.exists():
+            step_path = candidate
+            break
+
+    if step_path is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No STEP file found for this job. Only STEP files support hole detection."
+        )
+
+    try:
+        holes = _find_holes(step_path, min_diameter / 2, max_diameter / 2)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Hole detection failed: {str(e)}")
+
+    return {"holes": holes, "count": len(holes)}
+
+
+def _find_holes(step_path: Path, min_r: float, max_r: float) -> list:
+    """
+    Detect cylindrical faces (holes) in a STEP file using CadQuery/OCC.
+    Only imports OCC inside this function to avoid module-level import errors.
+    """
+    try:
+        import cadquery as cq
+        from OCP.BRep import BRep_Tool
+        from OCP.TopAbs import TopAbs_FACE
+        from OCP.TopExp import TopExp_Explorer
+        from OCP.GeomAbs import GeomAbs_Cylinder
+
+        shape = cq.importers.importStep(str(step_path))
+        holes = []
+        explorer = TopExp_Explorer(shape.val().wrapped, TopAbs_FACE)
+        while explorer.More():
+            face = explorer.Current()
+            surf = BRep_Tool.Surface_s(face)
+            if surf.GetType() == GeomAbs_Cylinder:
+                cyl = surf.Cylinder()
+                r = cyl.Radius()
+                if min_r <= r <= max_r:
+                    ax = cyl.Axis()
+                    loc = ax.Location()
+                    holes.append({
+                        "x": round(loc.X(), 2),
+                        "y": round(loc.Y(), 2),
+                        "diameter": round(r * 2, 2),
+                    })
+            explorer.Next()
+
+        # Deduplicate
+        seen = set()
+        unique = []
+        for h in holes:
+            key = (round(h["x"], 1), round(h["y"], 1))
+            if key not in seen:
+                seen.add(key)
+                unique.append(h)
+        return unique
+
+    except ImportError:
+        # OCP not available — return empty result
+        return []
+
+
 @router.post("/generate", response_model=EnclosureResponseSchema, summary="Generate enclosure")
 def generate_enclosure(request: EnclosureRequestSchema):
     """
@@ -126,7 +205,11 @@ def generate_enclosure(request: EnclosureRequestSchema):
             "height": c.height,
             "x": c.x,
             "y": c.y,
-            "z": c.z,
+            "z": c.ground_z if c.ground_z != 0 else c.z,
+            "ground_z": c.ground_z,
+            "is_pcb": c.is_pcb,
+            "pcb_screw_diameter": c.pcb_screw_diameter,
+            "standoff_positions": c.standoff_positions,
         }
         for c in request.components
     ]
@@ -146,6 +229,23 @@ def generate_enclosure(request: EnclosureRequestSchema):
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid connector/face: {e}")
 
+    # Build custom cutouts list
+    custom_cutouts = []
+    for cc in request.custom_cutouts:
+        try:
+            custom_cutouts.append(CustomCutout(
+                shape=CustomCutoutShape(cc.shape.value),
+                face=WallFace(cc.face.value),
+                width=cc.width,
+                height=cc.height,
+                depth=cc.depth,
+                offset_x=cc.offset_x,
+                offset_y=cc.offset_y,
+                rotation=cc.rotation,
+            ))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid custom cutout: {e}")
+
     # Build enclosure config
     config = EnclosureConfig(
         padding_x=request.padding_x,
@@ -157,7 +257,12 @@ def generate_enclosure(request: EnclosureRequestSchema):
         lid_style=LidStyle(request.lid_style.value),
         fillet_radius=request.fillet_radius,
         screw_diameter=request.screw_diameter,
+        screw_length=request.screw_length,
+        lid_hole_style=request.lid_hole_style,
+        enclosure_style=request.enclosure_style,
+        pcb_standoffs_enabled=request.pcb_standoffs_enabled,
         cutouts=cutouts,
+        custom_cutouts=custom_cutouts,
     )
 
     # Generate
@@ -171,10 +276,9 @@ def generate_enclosure(request: EnclosureRequestSchema):
         raise HTTPException(status_code=500, detail=f"Engine error: {str(e)}")
 
     # Compute dimensions for response
-    from ..engine.models import Vector3
     all_x = [c["x"] - c["width"]/2 for c in components_bbox] + [c["x"] + c["width"]/2 for c in components_bbox]
     all_y = [c["y"] - c["depth"]/2 for c in components_bbox] + [c["y"] + c["depth"]/2 for c in components_bbox]
-    all_z = [c["z"] for c in components_bbox] + [c["z"] + c["height"] for c in components_bbox]
+    all_z = [c.get("ground_z", c.get("z", 0)) for c in components_bbox] + [c.get("ground_z", c.get("z", 0)) + c["height"] for c in components_bbox]
 
     inner_w = (max(all_x) - min(all_x)) + request.padding_x * 2
     inner_d = (max(all_y) - min(all_y)) + request.padding_y * 2
