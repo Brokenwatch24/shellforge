@@ -5,6 +5,8 @@ import ComponentsList from "./components/ComponentsList";
 import ConnectorForm from "./components/ConnectorForm";
 import CustomCutoutForm from "./components/CustomCutoutForm";
 import EnclosureConfigPanel from "./components/EnclosureConfig";
+import PartsList from "./components/PartsList";
+import StylePresets from "./components/StylePresets";
 import Viewport3D from "./components/Viewport3D";
 import { fetchConnectors, generateEnclosure, downloadUrl } from "./api";
 import "./App.css";
@@ -25,6 +27,24 @@ const DEFAULT_CONFIG = {
   pcb_standoffs_enabled: true,
 };
 
+const DEFAULT_PART = {
+  style: "classic",
+  fillet_radius: 1.5,
+  wall_thickness: 2.5,
+  lid_hole_style: "countersunk",
+  tray_z: 0,
+  tray_thickness: 2,
+  bracket_hole_diameter: 4,
+  enabled: true,
+};
+
+const DEFAULT_PARTS = {
+  base:    { ...DEFAULT_PART, enabled: true },
+  lid:     { ...DEFAULT_PART, enabled: true },
+  tray:    { ...DEFAULT_PART, enabled: false },
+  bracket: { ...DEFAULT_PART, enabled: false },
+};
+
 export default function App() {
   const [components, setComponents] = useState([]);
   const [cutouts, setCutouts] = useState([]);
@@ -34,6 +54,9 @@ export default function App() {
   const [viewMode, setViewMode] = useState("both"); // solid | wireframe | both
   const [transformMode, setTransformMode] = useState("translate");
   const [config, setConfig] = useState(DEFAULT_CONFIG);
+  const [parts, setParts] = useState(DEFAULT_PARTS);
+  const [selectedPart, setSelectedPart] = useState("base");
+  const [activePreset, setActivePreset] = useState(null);
   const [connectorTypes, setConnectorTypes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -44,6 +67,16 @@ export default function App() {
       .then((data) => setConnectorTypes(data.connectors))
       .catch(() => setConnectorTypes([]));
   }, []);
+
+  // ── Part handlers ───────────────────────────────────────────────────────────
+
+  function updatePart(partName, patch) {
+    setParts((prev) => ({
+      ...prev,
+      [partName]: { ...prev[partName], ...patch },
+    }));
+    setActivePreset(null); // clear preset when user manually edits
+  }
 
   // ── Component handlers ──────────────────────────────────────────────────────
 
@@ -186,6 +219,7 @@ export default function App() {
         components: compsForBackend,
         cutouts,
         custom_cutouts: customCutouts,
+        parts,
       });
       setResult(data);
     } catch (e) {
@@ -211,14 +245,30 @@ export default function App() {
           {/* LEFT COLUMN */}
           <div className="left-col">
 
+            {/* 1. Style Presets */}
+            <StylePresets
+              parts={parts}
+              setParts={setParts}
+              config={config}
+              setConfig={setConfig}
+              activePreset={activePreset}
+              setActivePreset={setActivePreset}
+            />
+
+            {/* 2. File Import */}
             <div className="panel">
               <FileImport onImported={handleImported} />
             </div>
 
-            <div className="panel">
-              <ComponentForm onAdd={addComponent} />
-            </div>
+            {/* 3. Parts List */}
+            <PartsList
+              parts={parts}
+              updatePart={updatePart}
+              selectedPart={selectedPart}
+              setSelectedPart={setSelectedPart}
+            />
 
+            {/* 4. Components List */}
             <ComponentsList
               components={components}
               cutouts={cutouts}
@@ -235,6 +285,11 @@ export default function App() {
               onUpdateComponent={updateComponent}
             />
 
+            {/* Connector + Custom Cutout forms */}
+            <div className="panel">
+              <ComponentForm onAdd={addComponent} />
+            </div>
+
             <div className="panel">
               {connectorTypes.length > 0 ? (
                 <ConnectorForm connectors={connectorTypes} onAdd={addCutout} />
@@ -249,10 +304,12 @@ export default function App() {
               <CustomCutoutForm onAdd={addCustomCutout} />
             </div>
 
+            {/* 5. Enclosure Config (padding, screws, etc.) */}
             <div className="panel">
               <EnclosureConfigPanel config={config} onChange={setConfig} />
             </div>
 
+            {/* 6. Generate button + result */}
             <div className="generate-area">
               <button
                 className="generate-btn"
@@ -271,16 +328,16 @@ export default function App() {
                     <div className="dim-row">
                       <span>Inner</span>
                       <span>
-                        {result.dimensions.inner.width} ×{" "}
-                        {result.dimensions.inner.depth} ×{" "}
+                        {result.dimensions.inner.width} x{" "}
+                        {result.dimensions.inner.depth} x{" "}
                         {result.dimensions.inner.height} mm
                       </span>
                     </div>
                     <div className="dim-row">
                       <span>Outer</span>
                       <span>
-                        {result.dimensions.outer.width} ×{" "}
-                        {result.dimensions.outer.depth} ×{" "}
+                        {result.dimensions.outer.width} x{" "}
+                        {result.dimensions.outer.depth} x{" "}
                         {result.dimensions.outer.height} mm
                       </span>
                     </div>
@@ -292,7 +349,7 @@ export default function App() {
                         download="enclosure_base.stl"
                         className="download-btn"
                       >
-                        ↓ Base STL
+                        Base STL
                       </a>
                     )}
                     {result.files.lid && (
@@ -301,7 +358,25 @@ export default function App() {
                         download="enclosure_lid.stl"
                         className="download-btn secondary"
                       >
-                        ↓ Lid STL
+                        Lid STL
+                      </a>
+                    )}
+                    {result.files.tray && (
+                      <a
+                        href={downloadUrl(result.job_id, "tray")}
+                        download="enclosure_tray.stl"
+                        className="download-btn secondary"
+                      >
+                        Tray STL
+                      </a>
+                    )}
+                    {result.files.bracket && (
+                      <a
+                        href={downloadUrl(result.job_id, "bracket")}
+                        download="enclosure_bracket.stl"
+                        className="download-btn secondary"
+                      >
+                        Bracket STL
                       </a>
                     )}
                   </div>
@@ -317,8 +392,10 @@ export default function App() {
               cutouts={cutouts}
               customCutouts={customCutouts}
               config={config}
+              parts={parts}
               selectedId={selectedId}
               selectedType={selectedType}
+              selectedPart={selectedPart}
               onSelectComponent={selectComponent}
               onSelectCutout={selectCutout}
               onSelectCustomCutout={selectCustomCutout}

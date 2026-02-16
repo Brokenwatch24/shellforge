@@ -5,7 +5,7 @@ Useful for quick testing and for users who just know their component sizes.
 import cadquery as cq
 from pathlib import Path
 
-from .models import EnclosureConfig, Component, Vector3, LidStyle
+from .models import EnclosureConfig, Component, Vector3, LidStyle, PartConfig
 from .generator import (
     compute_combined_bbox,
     _apply_connector_cutout,
@@ -14,6 +14,14 @@ from .generator import (
     _add_pcb_standoffs,
     _build_lid_screws,
 )
+
+
+def _get_part(config: EnclosureConfig, part_name: str) -> PartConfig:
+    """Get part config, falling back to defaults if not present."""
+    parts = config.parts
+    if isinstance(parts, dict):
+        return parts.get(part_name, PartConfig())
+    return PartConfig()
 
 
 def generate_from_manual_bbox(
@@ -76,14 +84,20 @@ def generate_from_manual_bbox(
 
     config.components = components
 
-    # --- 0. Apply enclosure style overrides ---
-    style = config.enclosure_style
+    # --- Per-part config ---
+    base_part = _get_part(config, "base")
+    lid_part = _get_part(config, "lid")
+    tray_part = _get_part(config, "tray")
+    bracket_part = _get_part(config, "bracket")
+
+    # --- 0. Apply enclosure style overrides (base part drives global style) ---
+    style = base_part.style if base_part.style else config.enclosure_style
     if style == "minimal":
         wall = 1.8
         eff_fillet = 0.0
     else:
-        wall = config.wall_thickness
-        eff_fillet = config.fillet_radius
+        wall = base_part.wall_thickness if base_part.wall_thickness else config.wall_thickness
+        eff_fillet = base_part.fillet_radius
         if style == "rounded":
             eff_fillet = 3.0
 
@@ -169,14 +183,23 @@ def generate_from_manual_bbox(
 
     # --- Generate lid ---
     if config.lid_style != LidStyle.NONE:
+        lid_style_str = base_part.style if base_part.style else config.enclosure_style
+        lid_wall = lid_part.wall_thickness if lid_part.wall_thickness else wall
+        lid_fillet = lid_part.fillet_radius
+        if lid_style_str == "rounded":
+            lid_fillet = 3.0
+        if lid_style_str == "minimal":
+            lid_fillet = 0.0
+        lid_hole_style = lid_part.lid_hole_style if lid_part.lid_hole_style else config.lid_hole_style
+
         lid = (
             cq.Workplane("XY")
             .box(outer_w, outer_d, lid_t)
             .translate((0, 0, lid_t / 2))
         )
-        if eff_fillet > 0:
+        if lid_fillet > 0:
             try:
-                lid = lid.edges("|Z").fillet(eff_fillet)
+                lid = lid.edges("|Z").fillet(lid_fillet)
             except Exception:
                 pass
 
@@ -184,7 +207,7 @@ def generate_from_manual_bbox(
             lid = _build_lid_screws(
                 lid,
                 lid_style="screws",
-                lid_hole_style=config.lid_hole_style,
+                lid_hole_style=lid_hole_style,
                 lid_t=lid_t,
                 screw_r=config.screw_diameter / 2,
                 inner_w=inner_w,
@@ -209,6 +232,66 @@ def generate_from_manual_bbox(
         lid_path = output_path / "enclosure_lid.stl"
         cq.exporters.export(lid, str(lid_path))
         result["lid"] = str(lid_path)
+
+    # --- Generate tray (optional) ---
+    if tray_part.enabled:
+        tray_z = tray_part.tray_z
+        tray_thickness = tray_part.tray_thickness
+        clearance = 2.0
+
+        tray_w = inner_w - clearance * 2
+        tray_d = inner_d - clearance * 2
+
+        tray = (
+            cq.Workplane("XY")
+            .box(tray_w, tray_d, tray_thickness)
+            .translate((0, 0, floor + tray_z + tray_thickness / 2))
+        )
+
+        tray_path = output_path / "enclosure_tray.stl"
+        cq.exporters.export(tray, str(tray_path))
+        result["tray"] = str(tray_path)
+
+    # --- Generate bracket (optional) ---
+    if bracket_part.enabled:
+        bracket_wall = bracket_part.wall_thickness if bracket_part.wall_thickness else wall
+        hole_d = bracket_part.bracket_hole_diameter
+        bracket_w = 30.0
+        bracket_h = outer_h * 0.6  # covers 60% of enclosure height
+        bracket_t = bracket_wall
+
+        # Flat back plate
+        back_plate = (
+            cq.Workplane("XY")
+            .box(bracket_w, bracket_t, bracket_h)
+            .translate((0, 0, bracket_h / 2))
+        )
+
+        # L-flange (mounts to enclosure side)
+        flange_d = 12.0
+        flange = (
+            cq.Workplane("XY")
+            .box(bracket_w, flange_d, bracket_t)
+            .translate((0, flange_d / 2, bracket_h))
+        )
+        bracket = back_plate.union(flange)
+
+        # Drill 2 mounting holes in the back plate
+        hole_r = hole_d / 2
+        for hz in [bracket_h * 0.25, bracket_h * 0.75]:
+            hole = (
+                cq.Workplane("YZ")
+                .cylinder(bracket_t + 2, hole_r)
+                .translate((0, 0, hz))
+            )
+            try:
+                bracket = bracket.cut(hole)
+            except Exception:
+                pass
+
+        bracket_path = output_path / "enclosure_bracket.stl"
+        cq.exporters.export(bracket, str(bracket_path))
+        result["bracket"] = str(bracket_path)
 
     print(f"[OK] Enclosure generated from manual bbox: {result}")
     print(f"   Inner: {inner_w:.1f} x {inner_d:.1f} x {inner_h:.1f} mm")

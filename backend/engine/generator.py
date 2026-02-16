@@ -9,7 +9,7 @@ import math
 
 from .models import (
     EnclosureConfig, Component, ConnectorCutout, CustomCutout,
-    LidStyle, WallFace, ConnectorType, CustomCutoutShape, Vector3
+    LidStyle, WallFace, ConnectorType, CustomCutoutShape, Vector3, PartConfig
 )
 from ..connectors.profiles import get_profile
 
@@ -398,6 +398,14 @@ def _build_lid_screws(
     return lid
 
 
+def _get_part(config: EnclosureConfig, part_name: str) -> PartConfig:
+    """Get part config, falling back to defaults if not present."""
+    parts = config.parts
+    if isinstance(parts, dict):
+        return parts.get(part_name, PartConfig())
+    return PartConfig()
+
+
 def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") -> dict:
     """
     Main function: generate enclosure from config.
@@ -406,19 +414,27 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
     {
         "base": "path/to/enclosure_base.stl",
         "lid": "path/to/enclosure_lid.stl"   (if lid_style != NONE)
+        "tray": "path/to/enclosure_tray.stl" (if tray enabled)
+        "bracket": "path/to/enclosure_bracket.stl" (if bracket enabled)
     }
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # --- 0. Apply enclosure style overrides ---
-    style = config.enclosure_style
+    # --- Per-part config ---
+    base_part = _get_part(config, "base")
+    lid_part = _get_part(config, "lid")
+    tray_part = _get_part(config, "tray")
+    bracket_part = _get_part(config, "bracket")
+
+    # --- 0. Apply enclosure style overrides (base part drives global style) ---
+    style = base_part.style if base_part.style else config.enclosure_style
     if style == "minimal":
         wall = 1.8
         eff_fillet = 0.0
     else:
-        wall = config.wall_thickness
-        eff_fillet = config.fillet_radius
+        wall = base_part.wall_thickness if base_part.wall_thickness else config.wall_thickness
+        eff_fillet = base_part.fillet_radius
         if style == "rounded":
             eff_fillet = 3.0
 
@@ -520,22 +536,29 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
 
     # --- 10. Generate lid ---
     if config.lid_style != LidStyle.NONE:
+        lid_fillet = lid_part.fillet_radius
+        lid_hole_style = lid_part.lid_hole_style if lid_part.lid_hole_style else config.lid_hole_style
+        if base_part.style == "rounded" or lid_part.style == "rounded":
+            lid_fillet = 3.0
+        if lid_part.style == "minimal":
+            lid_fillet = 0.0
+
         if config.lid_style == LidStyle.SCREWS:
             lid = (
                 cq.Workplane("XY")
                 .box(outer_w, outer_d, lid_t)
                 .translate((0, 0, lid_t / 2))
             )
-            if eff_fillet > 0:
+            if lid_fillet > 0:
                 try:
-                    lid = lid.edges("|Z").fillet(eff_fillet)
+                    lid = lid.edges("|Z").fillet(lid_fillet)
                 except Exception:
                     pass
 
             lid = _build_lid_screws(
                 lid,
                 lid_style="screws",
-                lid_hole_style=config.lid_hole_style,
+                lid_hole_style=lid_hole_style,
                 lid_t=lid_t,
                 screw_r=config.screw_diameter / 2,
                 inner_w=inner_w,
@@ -566,6 +589,63 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
         lid_path = output_path / "enclosure_lid.stl"
         cq.exporters.export(lid, str(lid_path))
         result["lid"] = str(lid_path)
+
+    # --- 11. Generate tray (optional) ---
+    if tray_part.enabled:
+        tray_z = tray_part.tray_z
+        tray_thickness = tray_part.tray_thickness
+        clearance = 2.0
+
+        tray_w = inner_w - clearance * 2
+        tray_d = inner_d - clearance * 2
+
+        tray = (
+            cq.Workplane("XY")
+            .box(tray_w, tray_d, tray_thickness)
+            .translate((0, 0, floor + tray_z + tray_thickness / 2))
+        )
+
+        tray_path = output_path / "enclosure_tray.stl"
+        cq.exporters.export(tray, str(tray_path))
+        result["tray"] = str(tray_path)
+
+    # --- 12. Generate bracket (optional) ---
+    if bracket_part.enabled:
+        bracket_wall = bracket_part.wall_thickness if bracket_part.wall_thickness else wall
+        hole_d = bracket_part.bracket_hole_diameter
+        bracket_w = 30.0
+        bracket_h = outer_h * 0.6
+        bracket_t = bracket_wall
+
+        back_plate = (
+            cq.Workplane("XY")
+            .box(bracket_w, bracket_t, bracket_h)
+            .translate((0, 0, bracket_h / 2))
+        )
+
+        flange_d = 12.0
+        flange = (
+            cq.Workplane("XY")
+            .box(bracket_w, flange_d, bracket_t)
+            .translate((0, flange_d / 2, bracket_h))
+        )
+        bracket = back_plate.union(flange)
+
+        hole_r = hole_d / 2
+        for hz in [bracket_h * 0.25, bracket_h * 0.75]:
+            hole = (
+                cq.Workplane("YZ")
+                .cylinder(bracket_t + 2, hole_r)
+                .translate((0, 0, hz))
+            )
+            try:
+                bracket = bracket.cut(hole)
+            except Exception:
+                pass
+
+        bracket_path = output_path / "enclosure_bracket.stl"
+        cq.exporters.export(bracket, str(bracket_path))
+        result["bracket"] = str(bracket_path)
 
     print(f"[OK] Enclosure generated: {result}")
     return result

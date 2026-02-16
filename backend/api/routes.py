@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from .schemas import EnclosureRequestSchema, EnclosureResponseSchema
 from ..engine.models import (
     EnclosureConfig, ConnectorCutout, CustomCutout,
-    LidStyle, WallFace, ConnectorType, CustomCutoutShape
+    LidStyle, WallFace, ConnectorType, CustomCutoutShape, PartConfig
 )
 from ..engine.bbox_only import generate_from_manual_bbox
 from ..connectors.profiles import list_connectors
@@ -246,6 +246,26 @@ def generate_enclosure(request: EnclosureRequestSchema):
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid custom cutout: {e}")
 
+    # Build per-part configs
+    def _schema_to_part(ps) -> PartConfig:
+        return PartConfig(
+            style=ps.style,
+            fillet_radius=ps.fillet_radius,
+            wall_thickness=ps.wall_thickness,
+            lid_hole_style=ps.lid_hole_style,
+            tray_z=ps.tray_z,
+            tray_thickness=ps.tray_thickness,
+            bracket_hole_diameter=ps.bracket_hole_diameter,
+            enabled=ps.enabled,
+        )
+
+    parts_config = {
+        "base": _schema_to_part(request.parts.base),
+        "lid": _schema_to_part(request.parts.lid),
+        "tray": _schema_to_part(request.parts.tray),
+        "bracket": _schema_to_part(request.parts.bracket),
+    }
+
     # Build enclosure config
     config = EnclosureConfig(
         padding_x=request.padding_x,
@@ -261,6 +281,7 @@ def generate_enclosure(request: EnclosureRequestSchema):
         lid_hole_style=request.lid_hole_style,
         enclosure_style=request.enclosure_style,
         pcb_standoffs_enabled=request.pcb_standoffs_enabled,
+        parts=parts_config,
         cutouts=cutouts,
         custom_cutouts=custom_cutouts,
     )
@@ -290,6 +311,10 @@ def generate_enclosure(request: EnclosureRequestSchema):
         files["base"] = f"/download/{job_id}/base"
     if "lid" in result:
         files["lid"] = f"/download/{job_id}/lid"
+    if "tray" in result:
+        files["tray"] = f"/download/{job_id}/tray"
+    if "bracket" in result:
+        files["bracket"] = f"/download/{job_id}/bracket"
 
     return EnclosureResponseSchema(
         success=True,
@@ -307,10 +332,10 @@ def generate_enclosure(request: EnclosureRequestSchema):
 def download_stl(job_id: str, part: str):
     """
     Download generated STL file.
-    - part: 'base' or 'lid'
+    - part: 'base', 'lid', 'tray', or 'bracket'
     """
-    if part not in ("base", "lid"):
-        raise HTTPException(status_code=400, detail="part must be 'base' or 'lid'")
+    if part not in ("base", "lid", "tray", "bracket"):
+        raise HTTPException(status_code=400, detail="part must be 'base', 'lid', 'tray', or 'bracket'")
 
     file_path = OUTPUT_BASE / job_id / f"enclosure_{part}.stl"
     if not file_path.exists():

@@ -103,6 +103,20 @@ class CustomCutout:
 
 
 @dataclass
+class PartConfig:
+    """Per-part style/settings override."""
+    style: str = "classic"              # classic/vented/rounded/ribbed/minimal
+    fillet_radius: float = 1.5
+    wall_thickness: float = 2.5
+    # Part-specific extras:
+    lid_hole_style: str = "countersunk" # only for Lid part
+    tray_z: float = 0.0                 # only for Tray part - height off floor
+    tray_thickness: float = 2.0         # Tray floor thickness
+    bracket_hole_diameter: float = 4.0  # for Mount Bracket
+    enabled: bool = True                # whether to generate this part
+
+
+@dataclass
 class EnclosureConfig:
     """Configuration for generating the enclosure."""
     # Padding around components (mm)
@@ -139,6 +153,14 @@ class EnclosureConfig:
 
     # PCB standoffs
     pcb_standoffs_enabled: bool = True
+
+    # Per-part configs
+    parts: dict = field(default_factory=lambda: {
+        "base": PartConfig(),
+        "lid": PartConfig(),
+        "tray": PartConfig(enabled=False),
+        "bracket": PartConfig(enabled=False),
+    })
 
     # Components and cutouts
     components: list = field(default_factory=list)

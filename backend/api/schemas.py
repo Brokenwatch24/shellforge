@@ -67,6 +67,24 @@ class CustomCutoutSchema(BaseModel):
     rotation: float = Field(0.0, description="Rotation in degrees")
 
 
+class PartConfigSchema(BaseModel):
+    style: str = "classic"
+    fillet_radius: float = 1.5
+    wall_thickness: float = 2.5
+    lid_hole_style: str = "countersunk"
+    tray_z: float = 0.0
+    tray_thickness: float = 2.0
+    bracket_hole_diameter: float = 4.0
+    enabled: bool = True
+
+
+class PartsSchema(BaseModel):
+    base: PartConfigSchema = PartConfigSchema()
+    lid: PartConfigSchema = PartConfigSchema()
+    tray: PartConfigSchema = PartConfigSchema(enabled=False)
+    bracket: PartConfigSchema = PartConfigSchema(enabled=False)
+
+
 class EnclosureRequestSchema(BaseModel):
     """Full request body to generate an enclosure."""
     components: list[ComponentManualSchema] = Field(
@@ -101,6 +119,9 @@ class EnclosureRequestSchema(BaseModel):
     lid_hole_style: str = Field("countersunk", description="through | countersunk | closed")
     enclosure_style: str = Field("classic", description="classic | vented | rounded | ribbed | minimal")
     pcb_standoffs_enabled: bool = Field(True, description="Auto-generate PCB standoffs")
+
+    # Per-part configs
+    parts: PartsSchema = PartsSchema()
 
 
 class EnclosureResponseSchema(BaseModel):

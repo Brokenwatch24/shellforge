@@ -376,15 +376,56 @@ function CustomCutoutMesh({ cutout, enclosure, isSelected, onSelect }) {
   );
 }
 
-// ── Enclosure wireframe box ───────────────────────────────────────────────────
+// ── Enclosure wireframe box with part highlighting ────────────────────────────
 
-function EnclosureBox({ enclosure }) {
+function EnclosureBox({ enclosure, selectedPart, parts }) {
   if (!enclosure) return null;
+
+  const trayZ = parts && parts.tray && parts.tray.tray_z != null ? parts.tray.tray_z : 0;
+  const trayEnabled = parts && parts.tray && parts.tray.enabled;
+  const bracketEnabled = parts && parts.bracket && parts.bracket.enabled;
+  const halfH = enclosure.h / 2;
+
   return (
-    <mesh position={[0, enclosure.h / 2, 0]}>
-      <boxGeometry args={[enclosure.w, enclosure.h, enclosure.d]} />
-      <meshBasicMaterial color="#4ade80" wireframe />
-    </mesh>
+    <group>
+      {/* Base half highlight */}
+      {selectedPart === "base" && (
+        <mesh position={[0, enclosure.h * 0.3, 0]}>
+          <boxGeometry args={[enclosure.w + 0.5, enclosure.h * 0.6, enclosure.d + 0.5]} />
+          <meshStandardMaterial color="#4ade80" transparent opacity={0.12} />
+        </mesh>
+      )}
+
+      {/* Lid half highlight */}
+      {selectedPart === "lid" && (
+        <mesh position={[0, enclosure.h * 0.85, 0]}>
+          <boxGeometry args={[enclosure.w + 0.5, enclosure.h * 0.3, enclosure.d + 0.5]} />
+          <meshStandardMaterial color="#60a5fa" transparent opacity={0.15} />
+        </mesh>
+      )}
+
+      {/* Tray: thin horizontal plane at tray_z height */}
+      {selectedPart === "tray" && trayEnabled && (
+        <mesh position={[0, trayZ + 1, 0]}>
+          <boxGeometry args={[enclosure.w * 0.9, 2, enclosure.d * 0.9]} />
+          <meshStandardMaterial color="#38bdf8" transparent opacity={0.45} />
+        </mesh>
+      )}
+
+      {/* Bracket: small shape on one side */}
+      {selectedPart === "bracket" && bracketEnabled && (
+        <mesh position={[enclosure.w / 2 + 2, enclosure.h * 0.3, 0]}>
+          <boxGeometry args={[4, enclosure.h * 0.6, 30]} />
+          <meshStandardMaterial color="#f59e0b" transparent opacity={0.5} />
+        </mesh>
+      )}
+
+      {/* Main wireframe */}
+      <mesh position={[0, enclosure.h / 2, 0]}>
+        <boxGeometry args={[enclosure.w, enclosure.h, enclosure.d]} />
+        <meshBasicMaterial color="#4ade80" wireframe />
+      </mesh>
+    </group>
   );
 }
 
@@ -421,8 +462,8 @@ function CameraFramer({ triggerFrame, enclosure }) {
 // ── Scene ─────────────────────────────────────────────────────────────────────
 
 function Scene({
-  components, cutouts, customCutouts, config,
-  selectedId, selectedType,
+  components, cutouts, customCutouts, config, parts,
+  selectedId, selectedType, selectedPart,
   onSelectComponent, onSelectCutout, onSelectCustomCutout,
   onComponentMove, viewMode, transformMode,
   triggerFrame,
@@ -456,7 +497,7 @@ function Scene({
       ))}
 
       {/* Enclosure outline */}
-      {enclosure && <EnclosureBox enclosure={enclosure} />}
+      {enclosure && <EnclosureBox enclosure={enclosure} selectedPart={selectedPart} parts={parts} />}
 
       {/* Connector cutout boxes on walls */}
       {enclosure && cutouts.map((co) => (
@@ -545,8 +586,8 @@ function ViewToolbar({ viewMode, setViewMode, transformMode, setTransformMode, o
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export default function Viewport3D({
-  components, cutouts, customCutouts, config,
-  selectedId, selectedType,
+  components, cutouts, customCutouts, config, parts,
+  selectedId, selectedType, selectedPart,
   onSelectComponent, onSelectCutout, onSelectCustomCutout, onComponentMove,
   viewMode, setViewMode,
   transformMode, setTransformMode,
@@ -574,8 +615,10 @@ export default function Viewport3D({
             cutouts={cutouts}
             customCutouts={customCutouts || []}
             config={config}
+            parts={parts}
             selectedId={selectedId}
             selectedType={selectedType}
+            selectedPart={selectedPart}
             onSelectComponent={onSelectComponent}
             onSelectCutout={onSelectCutout}
             onSelectCustomCutout={onSelectCustomCutout}
