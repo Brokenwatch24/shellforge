@@ -13,6 +13,9 @@ from .generator import (
     _apply_enclosure_style,
     _add_pcb_standoffs,
     _build_lid_screws,
+    _build_footprint,
+    _export_shape,
+    _apply_edges,
 )
 
 
@@ -127,24 +130,15 @@ def generate_from_manual_bbox(
     # Boss height from screw_length
     boss_h = max(config.screw_length - lid_t, 3.0)
 
-    # --- Build base shell ---
-    base = (
-        cq.Workplane("XY")
-        .box(outer_w, outer_d, outer_h)
-        .translate((0, 0, outer_h / 2))
-    )
-    cavity = (
-        cq.Workplane("XY")
-        .box(inner_w, inner_d, inner_h)
-        .translate((0, 0, floor + inner_h / 2))
-    )
+    # --- Build base shell using footprint ---
+    footprint = _build_footprint(outer_w, outer_d, config.footprint)
+    base = footprint.extrude(outer_h)
+
+    cavity_fp = _build_footprint(inner_w, inner_d, config.footprint)
+    cavity = cavity_fp.extrude(inner_h).translate((0, 0, floor))
     base = base.cut(cavity)
 
-    if eff_fillet > 0:
-        try:
-            base = base.edges("|Z").fillet(eff_fillet)
-        except Exception:
-            pass
+    base = _apply_edges(base, base_part, eff_fillet)
 
     # --- Screw bosses ---
     if config.lid_style == LidStyle.SCREWS and style != "minimal":
@@ -165,26 +159,27 @@ def generate_from_manual_bbox(
     # --- Connector cutouts ---
     for cutout in config.cutouts:
         try:
-            base = _apply_connector_cutout(base, cutout, inner_size, wall, inner_center)
+            base = _apply_connector_cutout(base, cutout, inner_size, wall, inner_center, outer_h)
         except Exception as e:
             print(f"Warning: cutout skipped: {e}")
 
     # --- Custom cutouts ---
     for cutout in config.custom_cutouts:
-        base = _apply_custom_cutout(base, cutout, inner_size, wall, inner_center)
+        base = _apply_custom_cutout(base, cutout, inner_size, wall, inner_center, outer_h)
 
     # --- Enclosure style (vented/ribbed) ---
     base = _apply_enclosure_style(base, style, outer_w, outer_d, outer_h, wall, floor)
 
     # --- Export base ---
     base_path = output_path / "enclosure_base.stl"
-    cq.exporters.export(base, str(base_path))
+    _export_shape(base, base_path)
     result = {"base": str(base_path)}
+    if (output_path / "enclosure_base.3mf").exists():
+        result["base_3mf"] = str(output_path / "enclosure_base.3mf")
 
     # --- Generate lid ---
     if config.lid_style != LidStyle.NONE:
         lid_style_str = base_part.style if base_part.style else config.enclosure_style
-        lid_wall = lid_part.wall_thickness if lid_part.wall_thickness else wall
         lid_fillet = lid_part.fillet_radius
         if lid_style_str == "rounded":
             lid_fillet = 3.0
@@ -192,16 +187,9 @@ def generate_from_manual_bbox(
             lid_fillet = 0.0
         lid_hole_style = lid_part.lid_hole_style if lid_part.lid_hole_style else config.lid_hole_style
 
-        lid = (
-            cq.Workplane("XY")
-            .box(outer_w, outer_d, lid_t)
-            .translate((0, 0, lid_t / 2))
-        )
-        if lid_fillet > 0:
-            try:
-                lid = lid.edges("|Z").fillet(lid_fillet)
-            except Exception:
-                pass
+        lid_fp = _build_footprint(outer_w, outer_d, config.footprint)
+        lid = lid_fp.extrude(lid_t)
+        lid = _apply_edges(lid, lid_part, lid_fillet)
 
         if config.lid_style == LidStyle.SCREWS:
             lid = _build_lid_screws(
@@ -230,8 +218,10 @@ def generate_from_manual_bbox(
             lid = lid.union(rim).cut(rim_inner)
 
         lid_path = output_path / "enclosure_lid.stl"
-        cq.exporters.export(lid, str(lid_path))
+        _export_shape(lid, lid_path)
         result["lid"] = str(lid_path)
+        if (output_path / "enclosure_lid.3mf").exists():
+            result["lid_3mf"] = str(output_path / "enclosure_lid.3mf")
 
     # --- Generate tray (optional) ---
     if tray_part.enabled:
@@ -249,7 +239,7 @@ def generate_from_manual_bbox(
         )
 
         tray_path = output_path / "enclosure_tray.stl"
-        cq.exporters.export(tray, str(tray_path))
+        _export_shape(tray, tray_path)
         result["tray"] = str(tray_path)
 
     # --- Generate bracket (optional) ---
@@ -290,7 +280,7 @@ def generate_from_manual_bbox(
                 pass
 
         bracket_path = output_path / "enclosure_bracket.stl"
-        cq.exporters.export(bracket, str(bracket_path))
+        _export_shape(bracket, bracket_path)
         result["bracket"] = str(bracket_path)
 
     print(f"[OK] Enclosure generated from manual bbox: {result}")

@@ -9,7 +9,8 @@ import math
 
 from .models import (
     EnclosureConfig, Component, ConnectorCutout, CustomCutout,
-    LidStyle, WallFace, ConnectorType, CustomCutoutShape, Vector3, PartConfig
+    LidStyle, WallFace, ConnectorType, CustomCutoutShape, Vector3, PartConfig,
+    FootprintConfig
 )
 from ..connectors.profiles import get_profile
 
@@ -67,12 +68,104 @@ def compute_combined_bbox(components: list) -> tuple:
     return Vector3(min_x, min_y, min_z), Vector3(max_x, max_y, max_z)
 
 
+def _build_footprint(outer_w: float, outer_d: float, fp: FootprintConfig) -> cq.Workplane:
+    """Build a 2D footprint workplane for the enclosure base/lid."""
+    shape = fp.shape
+
+    if shape == "rectangle":
+        return cq.Workplane("XY").rect(outer_w, outer_d)
+
+    elif shape == "l_shape":
+        nw = fp.notch_w or outer_w * 0.4
+        nd = fp.notch_d or outer_d * 0.4
+        corner = fp.notch_corner
+        hw, hd = outer_w / 2, outer_d / 2
+        if corner == "top_right":
+            pts = [(-hw, -hd), (hw, -hd), (hw, hd - nd), (hw - nw, hd - nd), (hw - nw, hd), (-hw, hd)]
+        elif corner == "top_left":
+            pts = [(-hw, -hd), (hw, -hd), (hw, hd), (-hw + nw, hd), (-hw + nw, hd - nd), (-hw, hd - nd)]
+        elif corner == "bottom_right":
+            pts = [(-hw, -hd), (hw - nw, -hd), (hw - nw, -hd + nd), (hw, -hd + nd), (hw, hd), (-hw, hd)]
+        else:  # bottom_left
+            pts = [(-hw + nw, -hd), (-hw + nw, -hd + nd), (-hw, -hd + nd), (-hw, hd), (hw, hd), (hw, -hd)]
+        return cq.Workplane("XY").polyline(pts).close()
+
+    elif shape == "t_shape":
+        tw = fp.tab_w or outer_w * 0.4
+        td = fp.tab_d or outer_d * 0.3
+        side = fp.tab_side
+        hw, hd = outer_w / 2, outer_d / 2
+        if side == "top":
+            pts = [(-hw, -hd), (hw, -hd), (hw, hd - td), (tw / 2, hd - td), (tw / 2, hd),
+                   (-tw / 2, hd), (-tw / 2, hd - td), (-hw, hd - td)]
+        elif side == "bottom":
+            pts = [(-tw / 2, -hd), (tw / 2, -hd), (tw / 2, -hd + td), (hw, -hd + td),
+                   (hw, hd), (-hw, hd), (-hw, -hd + td), (-tw / 2, -hd + td)]
+        elif side == "right":
+            pts = [(-hw, -hd), (hw - td, -hd), (hw - td, -tw / 2), (hw, -tw / 2),
+                   (hw, tw / 2), (hw - td, tw / 2), (hw - td, hd), (-hw, hd)]
+        else:  # left
+            pts = [(-hw + td, -hd), (hw, -hd), (hw, hd), (-hw + td, hd),
+                   (-hw + td, tw / 2), (-hw, tw / 2), (-hw, -tw / 2), (-hw + td, -tw / 2)]
+        return cq.Workplane("XY").polyline(pts).close()
+
+    elif shape == "u_shape":
+        nw = fp.u_notch_w or outer_w * 0.5
+        nd = fp.u_notch_d or outer_d * 0.5
+        side = fp.u_open_side
+        hw, hd = outer_w / 2, outer_d / 2
+        if side == "top":
+            pts = [(-hw, -hd), (hw, -hd), (hw, hd), (nw / 2, hd), (nw / 2, hd - nd),
+                   (-nw / 2, hd - nd), (-nw / 2, hd), (-hw, hd)]
+        elif side == "bottom":
+            pts = [(-hw, -hd), (-nw / 2, -hd), (-nw / 2, -hd + nd), (nw / 2, -hd + nd),
+                   (nw / 2, -hd), (hw, -hd), (hw, hd), (-hw, hd)]
+        elif side == "right":
+            pts = [(-hw, -hd), (hw, -hd), (hw, -nw / 2), (hw - nd, -nw / 2),
+                   (hw - nd, nw / 2), (hw, nw / 2), (hw, hd), (-hw, hd)]
+        else:  # left
+            pts = [(-hw, -hd), (hw, -hd), (hw, hd), (-hw, hd), (-hw, nw / 2),
+                   (-hw + nd, nw / 2), (-hw + nd, -nw / 2), (-hw, -nw / 2)]
+        return cq.Workplane("XY").polyline(pts).close()
+
+    elif shape == "plus":
+        af = fp.arm_fraction
+        hw, hd = outer_w / 2, outer_d / 2
+        aw = outer_w * af / 2  # arm half-width
+        ad = outer_d * af / 2
+        pts = [
+            (-aw, -hd), (aw, -hd), (aw, -ad), (hw, -ad), (hw, ad),
+            (aw, ad), (aw, hd), (-aw, hd), (-aw, ad), (-hw, ad),
+            (-hw, -ad), (-aw, -ad)
+        ]
+        return cq.Workplane("XY").polyline(pts).close()
+
+    elif shape in ("hexagon", "octagon"):
+        sides = 6 if shape == "hexagon" else 8
+        r = min(outer_w, outer_d) / 2
+        return cq.Workplane("XY").polygon(sides, r)
+
+    # Fallback
+    return cq.Workplane("XY").rect(outer_w, outer_d)
+
+
+def _export_shape(shape, stl_path: Path):
+    """Export shape to STL and attempt 3MF."""
+    cq.exporters.export(shape, str(stl_path))
+    threemf_path = stl_path.with_suffix(".3mf")
+    try:
+        cq.exporters.export(shape, str(threemf_path))
+    except Exception:
+        pass  # 3MF may not be supported in all CadQuery builds
+
+
 def _apply_connector_cutout(
     shell: cq.Workplane,
     cutout: ConnectorCutout,
     inner_size: Vector3,
     wall_thickness: float,
     inner_center: Vector3,
+    outer_h: float = None,
 ) -> cq.Workplane:
     """Apply a single connector cutout to the shell."""
 
@@ -84,12 +177,14 @@ def _apply_connector_cutout(
     cut_d = wall_thickness + 2  # slightly deeper than wall to ensure clean cut
 
     face = cutout.face
+    offset_x = cutout.offset_x
+    offset_y = cutout.offset_y
 
     # Determine position and orientation based on face
     if face == WallFace.FRONT:
-        pos_x = inner_center.x + cutout.offset_x
+        pos_x = inner_center.x + offset_x
         pos_y = inner_center.y + inner_size.y / 2 + wall_thickness / 2
-        pos_z = inner_center.z + cutout.offset_y
+        pos_z = inner_center.z + offset_y
         wp = cq.Workplane("XZ").transformed(offset=(pos_x, pos_z, pos_y))
         if is_round:
             cut = wp.circle(profile["diameter"] / 2).extrude(cut_d, both=True)
@@ -97,9 +192,9 @@ def _apply_connector_cutout(
             cut = wp.rect(cut_w, cut_h).extrude(cut_d, both=True)
 
     elif face == WallFace.BACK:
-        pos_x = inner_center.x + cutout.offset_x
+        pos_x = inner_center.x + offset_x
         pos_y = inner_center.y - inner_size.y / 2 - wall_thickness / 2
-        pos_z = inner_center.z + cutout.offset_y
+        pos_z = inner_center.z + offset_y
         wp = cq.Workplane("XZ").transformed(offset=(pos_x, pos_z, pos_y))
         if is_round:
             cut = wp.circle(profile["diameter"] / 2).extrude(cut_d, both=True)
@@ -108,8 +203,8 @@ def _apply_connector_cutout(
 
     elif face == WallFace.RIGHT:
         pos_x = inner_center.x + inner_size.x / 2 + wall_thickness / 2
-        pos_y = inner_center.y + cutout.offset_x
-        pos_z = inner_center.z + cutout.offset_y
+        pos_y = inner_center.y + offset_x
+        pos_z = inner_center.z + offset_y
         wp = cq.Workplane("YZ").transformed(offset=(pos_y, pos_z, pos_x))
         if is_round:
             cut = wp.circle(profile["diameter"] / 2).extrude(cut_d, both=True)
@@ -118,11 +213,35 @@ def _apply_connector_cutout(
 
     elif face == WallFace.LEFT:
         pos_x = inner_center.x - inner_size.x / 2 - wall_thickness / 2
-        pos_y = inner_center.y + cutout.offset_x
-        pos_z = inner_center.z + cutout.offset_y
+        pos_y = inner_center.y + offset_x
+        pos_z = inner_center.z + offset_y
         wp = cq.Workplane("YZ").transformed(offset=(pos_y, pos_z, pos_x))
         if is_round:
             cut = wp.circle(profile["diameter"] / 2).extrude(cut_d, both=True)
+        else:
+            cut = wp.rect(cut_w, cut_h).extrude(cut_d, both=True)
+
+    elif face == WallFace.TOP:
+        # Cut from the top of the enclosure downward (-Z)
+        pos_x = inner_center.x + offset_x
+        pos_y = inner_center.y + offset_y
+        pos_z = outer_h if outer_h is not None else inner_center.z + inner_size.z / 2
+        wp = cq.Workplane("XY").transformed(offset=(pos_x, pos_y, pos_z))
+        r = profile.get("diameter", min(cut_w, cut_h)) / 2
+        if is_round:
+            cut = wp.circle(r).extrude(cut_d, both=True)
+        else:
+            cut = wp.rect(cut_w, cut_h).extrude(cut_d, both=True)
+
+    elif face == WallFace.BOTTOM:
+        # Cut from the floor upward (+Z)
+        pos_x = inner_center.x + offset_x
+        pos_y = inner_center.y + offset_y
+        pos_z = 0
+        wp = cq.Workplane("XY").transformed(offset=(pos_x, pos_y, pos_z))
+        r = profile.get("diameter", min(cut_w, cut_h)) / 2
+        if is_round:
+            cut = wp.circle(r).extrude(cut_d, both=True)
         else:
             cut = wp.rect(cut_w, cut_h).extrude(cut_d, both=True)
 
@@ -139,6 +258,7 @@ def _apply_custom_cutout(
     inner_size: Vector3,
     wall_thickness: float,
     inner_center: Vector3,
+    outer_h: float = None,
 ) -> cq.Workplane:
     """Apply a single custom cutout to the shell."""
     w = cutout.width
@@ -187,6 +307,20 @@ def _apply_custom_cutout(
             pos_y = inner_center.y + cutout.offset_x
             pos_z = inner_center.z + cutout.offset_y
             wp = cq.Workplane("YZ").transformed(offset=(pos_y, pos_z, pos_x), rotate=(rot, 0, 0))
+            cut = make_profile(wp, shape, w, h).extrude(cut_d, both=True)
+
+        elif face == WallFace.TOP:
+            pos_x = inner_center.x + cutout.offset_x
+            pos_y = inner_center.y + cutout.offset_y
+            pos_z = outer_h if outer_h is not None else inner_center.z + inner_size.z / 2
+            wp = cq.Workplane("XY").transformed(offset=(pos_x, pos_y, pos_z), rotate=(0, 0, rot))
+            cut = make_profile(wp, shape, w, h).extrude(cut_d, both=True)
+
+        elif face == WallFace.BOTTOM:
+            pos_x = inner_center.x + cutout.offset_x
+            pos_y = inner_center.y + cutout.offset_y
+            pos_z = 0
+            wp = cq.Workplane("XY").transformed(offset=(pos_x, pos_y, pos_z), rotate=(0, 0, rot))
             cut = make_profile(wp, shape, w, h).extrude(cut_d, both=True)
 
         else:
@@ -406,6 +540,25 @@ def _get_part(config: EnclosureConfig, part_name: str) -> PartConfig:
     return PartConfig()
 
 
+def _apply_edges(shell: cq.Workplane, part_config: PartConfig, fillet_r: float) -> cq.Workplane:
+    """Apply fillet or chamfer to vertical edges based on part config."""
+    edge_style = getattr(part_config, "edge_style", "fillet")
+    chamfer_size = getattr(part_config, "chamfer_size", 1.5)
+
+    if edge_style == "fillet" and fillet_r > 0:
+        try:
+            shell = shell.edges("|Z").fillet(fillet_r)
+        except Exception:
+            pass
+    elif edge_style == "chamfer" and chamfer_size > 0:
+        try:
+            shell = shell.edges("|Z").chamfer(chamfer_size)
+        except Exception:
+            pass
+    # "none": no edge treatment
+    return shell
+
+
 def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") -> dict:
     """
     Main function: generate enclosure from config.
@@ -470,25 +623,15 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
     # Boss height from screw_length
     boss_h = max(config.screw_length - lid_t, 3.0)
 
-    # --- 3. Build the base shell ---
-    base = (
-        cq.Workplane("XY")
-        .box(outer_w, outer_d, outer_h)
-        .translate((0, 0, outer_h / 2))
-    )
+    # --- 3. Build the base shell using footprint ---
+    footprint = _build_footprint(outer_w, outer_d, config.footprint)
+    base = footprint.extrude(outer_h)
 
-    cavity = (
-        cq.Workplane("XY")
-        .box(inner_w, inner_d, inner_h)
-        .translate((0, 0, floor + inner_h / 2))
-    )
+    cavity_fp = _build_footprint(inner_w, inner_d, config.footprint)
+    cavity = cavity_fp.extrude(inner_h).translate((0, 0, floor))
     base = base.cut(cavity)
 
-    if eff_fillet > 0:
-        try:
-            base = base.edges("|Z").fillet(eff_fillet)
-        except Exception:
-            pass
+    base = _apply_edges(base, base_part, eff_fillet)
 
     # --- 4. Add screw bosses (for SCREWS lid style, not minimal) ---
     if config.lid_style == LidStyle.SCREWS and style != "minimal":
@@ -518,21 +661,23 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
     # --- 6. Apply connector cutouts to base ---
     for cutout in config.cutouts:
         try:
-            base = _apply_connector_cutout(base, cutout, inner_size, wall, inner_center)
+            base = _apply_connector_cutout(base, cutout, inner_size, wall, inner_center, outer_h)
         except Exception as e:
             print(f"Warning: Could not apply cutout {cutout.connector_type}: {e}")
 
     # --- 7. Apply custom cutouts to base ---
     for cutout in config.custom_cutouts:
-        base = _apply_custom_cutout(base, cutout, inner_size, wall, inner_center)
+        base = _apply_custom_cutout(base, cutout, inner_size, wall, inner_center, outer_h)
 
     # --- 8. Apply enclosure style (vented/ribbed) ---
     base = _apply_enclosure_style(base, style, outer_w, outer_d, outer_h, wall, floor)
 
     # --- 9. Export base ---
     base_path = output_path / "enclosure_base.stl"
-    cq.exporters.export(base, str(base_path))
+    _export_shape(base, base_path)
     result = {"base": str(base_path)}
+    if (output_path / "enclosure_base.3mf").exists():
+        result["base_3mf"] = str(output_path / "enclosure_base.3mf")
 
     # --- 10. Generate lid ---
     if config.lid_style != LidStyle.NONE:
@@ -543,17 +688,11 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
         if lid_part.style == "minimal":
             lid_fillet = 0.0
 
+        lid_fp = _build_footprint(outer_w, outer_d, config.footprint)
+
         if config.lid_style == LidStyle.SCREWS:
-            lid = (
-                cq.Workplane("XY")
-                .box(outer_w, outer_d, lid_t)
-                .translate((0, 0, lid_t / 2))
-            )
-            if lid_fillet > 0:
-                try:
-                    lid = lid.edges("|Z").fillet(lid_fillet)
-                except Exception:
-                    pass
+            lid = lid_fp.extrude(lid_t)
+            lid = _apply_edges(lid, lid_part, lid_fillet)
 
             lid = _build_lid_screws(
                 lid,
@@ -568,11 +707,7 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
             )
 
         elif config.lid_style == LidStyle.SNAP:
-            lid = (
-                cq.Workplane("XY")
-                .box(outer_w, outer_d, lid_t)
-                .translate((0, 0, lid_t / 2))
-            )
+            lid = lid_fp.extrude(lid_t)
             rim_h = config.snap_depth * 2
             rim = (
                 cq.Workplane("XY")
@@ -587,8 +722,10 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
             lid = lid.union(rim).cut(rim_inner)
 
         lid_path = output_path / "enclosure_lid.stl"
-        cq.exporters.export(lid, str(lid_path))
+        _export_shape(lid, lid_path)
         result["lid"] = str(lid_path)
+        if (output_path / "enclosure_lid.3mf").exists():
+            result["lid_3mf"] = str(output_path / "enclosure_lid.3mf")
 
     # --- 11. Generate tray (optional) ---
     if tray_part.enabled:
@@ -606,7 +743,7 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
         )
 
         tray_path = output_path / "enclosure_tray.stl"
-        cq.exporters.export(tray, str(tray_path))
+        _export_shape(tray, tray_path)
         result["tray"] = str(tray_path)
 
     # --- 12. Generate bracket (optional) ---
@@ -644,7 +781,7 @@ def generate_enclosure(config: EnclosureConfig, output_dir: str = "./output") ->
                 pass
 
         bracket_path = output_path / "enclosure_bracket.stl"
-        cq.exporters.export(bracket, str(bracket_path))
+        _export_shape(bracket, bracket_path)
         result["bracket"] = str(bracket_path)
 
     print(f"[OK] Enclosure generated: {result}")

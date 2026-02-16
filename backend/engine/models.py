@@ -41,11 +41,42 @@ class CustomCutoutShape(str, Enum):
     TRIANGLE = "triangle"
 
 
+class FootprintShape(str, Enum):
+    RECTANGLE = "rectangle"
+    L_SHAPE = "l_shape"
+    T_SHAPE = "t_shape"
+    U_SHAPE = "u_shape"
+    PLUS = "plus"
+    HEXAGON = "hexagon"
+    OCTAGON = "octagon"
+
+
 @dataclass
 class Vector3:
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
+
+
+@dataclass
+class FootprintConfig:
+    shape: str = "rectangle"
+    # For L_SHAPE: notch in one corner
+    notch_w: float = 0.0      # if 0: auto = outer_w * 0.4
+    notch_d: float = 0.0      # if 0: auto = outer_d * 0.4
+    notch_corner: str = "top_right"  # top_right/top_left/bottom_right/bottom_left
+    # For T_SHAPE: tab on one side
+    tab_w: float = 0.0        # width of tab
+    tab_d: float = 0.0        # depth of tab
+    tab_side: str = "top"     # top/bottom/left/right
+    # For U_SHAPE: notch from one side
+    u_notch_w: float = 0.0
+    u_notch_d: float = 0.0
+    u_open_side: str = "top"  # which side is open
+    # For PLUS: arm width fraction
+    arm_fraction: float = 0.4
+    # Polygon sides (for hexagon/octagon fallback)
+    polygon_sides: int = 6
 
 
 @dataclass
@@ -114,6 +145,9 @@ class PartConfig:
     tray_thickness: float = 2.0         # Tray floor thickness
     bracket_hole_diameter: float = 4.0  # for Mount Bracket
     enabled: bool = True                # whether to generate this part
+    # Edge style
+    edge_style: str = "fillet"          # "none" | "fillet" | "chamfer"
+    chamfer_size: float = 1.5           # mm
 
 
 @dataclass
@@ -153,6 +187,9 @@ class EnclosureConfig:
 
     # PCB standoffs
     pcb_standoffs_enabled: bool = True
+
+    # Footprint shape
+    footprint: FootprintConfig = field(default_factory=FootprintConfig)
 
     # Per-part configs
     parts: dict = field(default_factory=lambda: {

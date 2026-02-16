@@ -4,6 +4,7 @@ ShellForge API - Route handlers.
 import uuid
 import shutil
 import os
+import json
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
@@ -11,7 +12,8 @@ from fastapi.responses import FileResponse
 from .schemas import EnclosureRequestSchema, EnclosureResponseSchema
 from ..engine.models import (
     EnclosureConfig, ConnectorCutout, CustomCutout,
-    LidStyle, WallFace, ConnectorType, CustomCutoutShape, PartConfig
+    LidStyle, WallFace, ConnectorType, CustomCutoutShape, PartConfig,
+    FootprintConfig
 )
 from ..engine.bbox_only import generate_from_manual_bbox
 from ..connectors.profiles import list_connectors
@@ -26,11 +28,59 @@ OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
 IMPORTS_DIR = Path("./output/imports")
 IMPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Component library path
+LIBRARY_PATH = Path(__file__).parent.parent / "library" / "components.json"
+
 
 @router.get("/connectors", summary="List available connector types")
 def get_connectors():
     """Returns all supported connector cutout profiles."""
     return {"connectors": list_connectors()}
+
+
+@router.get("/library/search", summary="Search component library")
+def search_library(q: str = "", category: str = "", limit: int = 20):
+    """Search the component library by name, tags, or category."""
+    if not LIBRARY_PATH.exists():
+        raise HTTPException(status_code=404, detail="Component library not found")
+    with open(LIBRARY_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    components = data["components"]
+    if q:
+        q_lower = q.lower()
+        components = [
+            c for c in components
+            if q_lower in c["name"].lower()
+            or any(q_lower in t for t in c["tags"])
+            or q_lower in c.get("description", "").lower()
+        ]
+    if category:
+        components = [c for c in components if c["category"] == category]
+    return {"components": components[:limit], "total": len(components)}
+
+
+@router.get("/library/categories", summary="List component categories")
+def list_categories():
+    """List all unique component categories."""
+    if not LIBRARY_PATH.exists():
+        raise HTTPException(status_code=404, detail="Component library not found")
+    with open(LIBRARY_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    cats = sorted(set(c["category"] for c in data["components"]))
+    return {"categories": cats}
+
+
+@router.get("/library/component/{component_id}", summary="Get component by ID")
+def get_component(component_id: str):
+    """Get a specific component from the library by ID."""
+    if not LIBRARY_PATH.exists():
+        raise HTTPException(status_code=404, detail="Component library not found")
+    with open(LIBRARY_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    for c in data["components"]:
+        if c["id"] == component_id:
+            return c
+    raise HTTPException(status_code=404, detail="Component not found")
 
 
 @router.post("/import", summary="Import STL or STEP file")
@@ -257,6 +307,8 @@ def generate_enclosure(request: EnclosureRequestSchema):
             tray_thickness=ps.tray_thickness,
             bracket_hole_diameter=ps.bracket_hole_diameter,
             enabled=ps.enabled,
+            edge_style=ps.edge_style,
+            chamfer_size=ps.chamfer_size,
         )
 
     parts_config = {
@@ -265,6 +317,23 @@ def generate_enclosure(request: EnclosureRequestSchema):
         "tray": _schema_to_part(request.parts.tray),
         "bracket": _schema_to_part(request.parts.bracket),
     }
+
+    # Build footprint config
+    fp = request.footprint
+    footprint_config = FootprintConfig(
+        shape=fp.shape.value,
+        notch_w=fp.notch_w,
+        notch_d=fp.notch_d,
+        notch_corner=fp.notch_corner,
+        tab_w=fp.tab_w,
+        tab_d=fp.tab_d,
+        tab_side=fp.tab_side,
+        u_notch_w=fp.u_notch_w,
+        u_notch_d=fp.u_notch_d,
+        u_open_side=fp.u_open_side,
+        arm_fraction=fp.arm_fraction,
+        polygon_sides=fp.polygon_sides,
+    )
 
     # Build enclosure config
     config = EnclosureConfig(
@@ -281,6 +350,7 @@ def generate_enclosure(request: EnclosureRequestSchema):
         lid_hole_style=request.lid_hole_style,
         enclosure_style=request.enclosure_style,
         pcb_standoffs_enabled=request.pcb_standoffs_enabled,
+        footprint=footprint_config,
         parts=parts_config,
         cutouts=cutouts,
         custom_cutouts=custom_cutouts,
@@ -309,8 +379,12 @@ def generate_enclosure(request: EnclosureRequestSchema):
     files = {}
     if "base" in result:
         files["base"] = f"/download/{job_id}/base"
+    if "base_3mf" in result:
+        files["base_3mf"] = f"/download/{job_id}/base/3mf"
     if "lid" in result:
         files["lid"] = f"/download/{job_id}/lid"
+    if "lid_3mf" in result:
+        files["lid_3mf"] = f"/download/{job_id}/lid/3mf"
     if "tray" in result:
         files["tray"] = f"/download/{job_id}/tray"
     if "bracket" in result:
@@ -345,6 +419,26 @@ def download_stl(job_id: str, part: str):
         path=str(file_path),
         media_type="application/octet-stream",
         filename=f"shellforge_{part}.stl",
+    )
+
+
+@router.get("/download/{job_id}/{part}/3mf", summary="Download 3MF file")
+def download_3mf(job_id: str, part: str):
+    """
+    Download generated 3MF file.
+    - part: 'base', 'lid', 'tray', or 'bracket'
+    """
+    if part not in ("base", "lid", "tray", "bracket"):
+        raise HTTPException(status_code=400, detail="part must be 'base', 'lid', 'tray', or 'bracket'")
+
+    file_path = OUTPUT_BASE / job_id / f"enclosure_{part}.3mf"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="3MF file not found. May not be supported by this build.")
+
+    return FileResponse(
+        path=str(file_path),
+        media_type="application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+        filename=f"shellforge_{part}.3mf",
     )
 
 

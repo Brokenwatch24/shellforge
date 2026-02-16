@@ -1,0 +1,125 @@
+{
+  "version": "1.0",
+  "components": [
+    {
+      "id": "esp32-devkit-v1",
+      "name": "ESP32 DevKit V1",
+      "category": "microcontroller",
+      "tags": ["esp32", "wifi", "bluetooth"],
+      "dimensions": {"width": 28.0, "depth": 55.0, "height": 12.0},
+      "description": "ESP32 dual-core WiFi+BT dev board (30-pin)",
+      "is_pcb": true,
+      "pcb_screw_diameter": 2.5,
+      "step_url": null,
+      "stl_url": null
+    },
+    {
+      "id": "arduino-nano",
+      "name": "Arduino Nano",
+      "category": "microcontroller",
+      "tags": ["arduino", "avr", "nano"],
+      "dimensions": {"width": 18.0, "depth": 45.0, "height": 14.0},
+      "description": "Arduino Nano - compact AVR board",
+      "is_pcb": true,
+      "pcb_screw_diameter": 2.0,
+      "step_url": null,
+      "stl_url": null
+    },
+    {
+      "id": "raspberry-pi-zero-2w",
+      "name": "Raspberry Pi Zero 2W",
+      "category": "sbc",
+      "tags": ["raspberry pi", "linux", "sbc"],
+      "dimensions": {"width": 30.0, "depth": 65.0, "height": 5.0},
+      "description": "RPi Zero 2W - quad-core Linux SBC",
+      "is_pcb": true,
+      "pcb_screw_diameter": 2.5,
+      "step_url": null,
+      "stl_url": null
+    },
+    {
+      "id": "raspberry-pi-4b",
+      "name": "Raspberry Pi 4B",
+      "category": "sbc",
+      "tags": ["raspberry pi", "linux", "sbc"],
+      "dimensions": {"width": 56.0, "depth": 85.0, "height": 17.0},
+      "description": "RPi 4B - full-size Linux SBC",
+      "is_pcb": true,
+      "pcb_screw_diameter": 2.5,
+      "step_url": null,
+      "stl_url": null
+    },
+    {
+      "id": "arduino-uno-r3",
+      "name": "Arduino Uno R3",
+      "category": "microcontroller",
+      "tags": ["arduino", "avr", "uno"],
+      "dimensions": {"width": 53.4, "depth": 68.6, "height": 15.0},
+      "description": "Arduino Uno R3 - the classic",
+      "is_pcb": true,
+      "pcb_screw_diameter": 3.0,
+      "step_url": null,
+      "stl_url": null
+    },
+    {
+      "id": "esp8266-nodemcu",
+      "name": "ESP8266 NodeMCU",
+      "category": "microcontroller",
+      "tags": ["esp8266", "wifi", "nodemcu"],
+      "dimensions": {"width": 30.0, "depth": 58.0, "height": 12.0},
+      "description": "NodeMCU ESP8266 WiFi dev board",
+      "is_pcb": true,
+      "pcb_screw_diameter": 2.5,
+      "step_url": null,
+      "stl_url": null
+    },
+    {
+      "id": "oled-096-i2c",
+      "name": "OLED 0.96in I2C",
+      "category": "display",
+      "tags": ["oled", "display", "i2c", "ssd1306"],
+      "dimensions": {"width": 27.0, "depth": 27.0, "height": 4.0},
+      "description": "0.96 inch OLED 128x64 I2C display module",
+      "is_pcb": false,
+      "pcb_screw_diameter": 2.0,
+      "step_url": null,
+      "stl_url": null
+    },
+    {
+      "id": "18650-battery-holder",
+      "name": "18650 Battery Holder (single)",
+      "category": "power",
+      "tags": ["battery", "18650", "holder"],
+      "dimensions": {"width": 21.0, "depth": 72.0, "height": 22.0},
+      "description": "Single 18650 Li-ion battery holder",
+      "is_pcb": false,
+      "pcb_screw_diameter": 2.0,
+      "step_url": null,
+      "stl_url": null
+    },
+    {
+      "id": "nrf24l01-module",
+      "name": "nRF24L01+ Module",
+      "category": "wireless",
+      "tags": ["nrf24", "wireless", "rf", "24ghz"],
+      "dimensions": {"width": 29.0, "depth": 17.0, "height": 1.6},
+      "description": "2.4GHz wireless transceiver module",
+      "is_pcb": true,
+      "pcb_screw_diameter": 2.0,
+      "step_url": null,
+      "stl_url": null
+    },
+    {
+      "id": "l298n-motor-driver",
+      "name": "L298N Motor Driver",
+      "category": "motor",
+      "tags": ["l298n", "motor", "driver", "h-bridge"],
+      "dimensions": {"width": 43.0, "depth": 43.0, "height": 27.0},
+      "description": "Dual H-bridge DC/stepper motor driver",
+      "is_pcb": true,
+      "pcb_screw_diameter": 3.0,
+      "step_url": null,
+      "stl_url": null
+    }
+  ]
+}

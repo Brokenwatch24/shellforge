@@ -115,6 +115,7 @@ function PartExpandedSettings({ partName, part, updatePart }) {
   }
 
   if (partName === "base") {
+    const edgeStyle = part.edge_style || "fillet";
     return (
       <div className="expanded-fields">
         <div className="field-row two-col">
@@ -124,14 +125,38 @@ function PartExpandedSettings({ partName, part, updatePart }) {
           </label>
           <label>
             Fillet Radius (mm)
-            <input type="number" step="0.5" min="0" max="5" value={part.fillet_radius} onChange={handle("fillet_radius")} />
+            <input type="number" step="0.5" min="0" max="5" value={part.fillet_radius} onChange={handle("fillet_radius")} disabled={edgeStyle !== "fillet"} />
           </label>
         </div>
+        <div className="field-row">
+          <label>Edge Style</label>
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+            {["none", "fillet", "chamfer"].map((s) => (
+              <button
+                key={s}
+                className={`toolbar-btn${edgeStyle === s ? " active" : ""}`}
+                style={{ flex: 1, fontSize: 12, padding: "3px 6px" }}
+                onClick={() => updatePart(partName, { edge_style: s })}
+              >
+                {s.charAt(0).toUpperCase() + s.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+        {edgeStyle === "chamfer" && (
+          <div className="field-row">
+            <label>
+              Chamfer Size (mm)
+              <input type="number" step="0.5" min="0.1" max="5" value={part.chamfer_size ?? 1.5} onChange={handle("chamfer_size")} />
+            </label>
+          </div>
+        )}
       </div>
     );
   }
 
   if (partName === "lid") {
+    const edgeStyle = part.edge_style || "fillet";
     return (
       <div className="expanded-fields">
         <div className="field-row two-col">
@@ -141,19 +166,40 @@ function PartExpandedSettings({ partName, part, updatePart }) {
           </label>
           <label>
             Fillet Radius (mm)
-            <input type="number" step="0.5" min="0" max="5" value={part.fillet_radius} onChange={handle("fillet_radius")} />
+            <input type="number" step="0.5" min="0" max="5" value={part.fillet_radius} onChange={handle("fillet_radius")} disabled={edgeStyle !== "fillet"} />
           </label>
         </div>
         <div className="field-row">
-          <label>
-            Lid Hole Style
-            <select value={part.lid_hole_style || "countersunk"} onChange={handleStr("lid_hole_style")}>
-              <option value="through">Through (open)</option>
-              <option value="countersunk">Countersunk</option>
-              <option value="closed">Closed (no hole)</option>
-            </select>
-          </label>
+          <label>Lid Hole Style</label>
+          <select value={part.lid_hole_style || "countersunk"} onChange={handleStr("lid_hole_style")}>
+            <option value="through">Through (open)</option>
+            <option value="countersunk">Countersunk</option>
+            <option value="closed">Closed (no hole)</option>
+          </select>
         </div>
+        <div className="field-row">
+          <label>Edge Style</label>
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+            {["none", "fillet", "chamfer"].map((s) => (
+              <button
+                key={s}
+                className={`toolbar-btn${edgeStyle === s ? " active" : ""}`}
+                style={{ flex: 1, fontSize: 12, padding: "3px 6px" }}
+                onClick={() => updatePart(partName, { edge_style: s })}
+              >
+                {s.charAt(0).toUpperCase() + s.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+        {edgeStyle === "chamfer" && (
+          <div className="field-row">
+            <label>
+              Chamfer Size (mm)
+              <input type="number" step="0.5" min="0.1" max="5" value={part.chamfer_size ?? 1.5} onChange={handle("chamfer_size")} />
+            </label>
+          </div>
+        )}
       </div>
     );
   }

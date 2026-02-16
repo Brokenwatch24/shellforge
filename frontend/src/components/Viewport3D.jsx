@@ -140,7 +140,7 @@ function ElevationLine({ x, z, groundZ, color }) {
 
 function ComponentObject({
   comp, colorIndex, viewMode, isSelected,
-  onSelect, onMove, setOrbitEnabled, transformMode,
+  onSelect, onMove, setOrbitEnabled, transformMode, snapSize,
 }) {
   const color = PALETTE[colorIndex % PALETTE.length];
   const groupRef = useRef();
@@ -170,14 +170,23 @@ function ComponentObject({
     if (groupRef.current) {
       const p = groupRef.current.position;
       const r = groupRef.current.rotation;
+      // Apply grid snap if enabled
+      const snap = (v) => snapSize > 0 ? Math.round(v / snapSize) * snapSize : v;
+      const newX = snap(p.x);
+      const newY = snap(p.z);
+      const newZ = Math.max(0, snap(p.y - comp.height / 2));
+      // Sync mesh to snapped position
+      if (snapSize > 0) {
+        groupRef.current.position.set(newX, newZ + comp.height / 2, newY);
+      }
       onMove(comp.id, {
-        x: p.x,
-        y: p.z,              // Three.js Z → engineering Y
-        ground_z: Math.max(0, p.y - comp.height / 2),  // Three.js Y → ground_z
+        x: newX,
+        y: newY,
+        ground_z: newZ,
         rotY: r.y,
       });
     }
-  }, [comp.id, comp.height, onMove, setOrbitEnabled]);
+  }, [comp.id, comp.height, onMove, setOrbitEnabled, snapSize]);
 
   const handleClick = useCallback((e) => {
     e.stopPropagation();
@@ -376,15 +385,104 @@ function CustomCutoutMesh({ cutout, enclosure, isSelected, onSelect }) {
   );
 }
 
+// ── Build footprint points for non-rectangular shapes ─────────────────────────
+
+function buildFootprintPoints(w, d, fp) {
+  if (!fp || fp.shape === "rectangle") return null;
+  const shape = fp.shape;
+  const hw = w / 2, hd = d / 2;
+
+  if (shape === "l_shape") {
+    const nw = fp.notch_w || w * 0.4;
+    const nd = fp.notch_d || d * 0.4;
+    const corner = fp.notch_corner || "top_right";
+    if (corner === "top_right")
+      return [[-hw,-hd],[hw,-hd],[hw,hd-nd],[hw-nw,hd-nd],[hw-nw,hd],[-hw,hd]];
+    if (corner === "top_left")
+      return [[-hw,-hd],[hw,-hd],[hw,hd],[-hw+nw,hd],[-hw+nw,hd-nd],[-hw,hd-nd]];
+    if (corner === "bottom_right")
+      return [[-hw,-hd],[hw-nw,-hd],[hw-nw,-hd+nd],[hw,-hd+nd],[hw,hd],[-hw,hd]];
+    return [[-hw+nw,-hd],[-hw+nw,-hd+nd],[-hw,-hd+nd],[-hw,hd],[hw,hd],[hw,-hd]];
+  }
+  if (shape === "t_shape") {
+    const tw = fp.tab_w || w * 0.4;
+    const td = fp.tab_d || d * 0.3;
+    const side = fp.tab_side || "top";
+    if (side === "top")
+      return [[-hw,-hd],[hw,-hd],[hw,hd-td],[tw/2,hd-td],[tw/2,hd],[-tw/2,hd],[-tw/2,hd-td],[-hw,hd-td]];
+    if (side === "bottom")
+      return [[-tw/2,-hd],[tw/2,-hd],[tw/2,-hd+td],[hw,-hd+td],[hw,hd],[-hw,hd],[-hw,-hd+td],[-tw/2,-hd+td]];
+    if (side === "right")
+      return [[-hw,-hd],[hw-td,-hd],[hw-td,-tw/2],[hw,-tw/2],[hw,tw/2],[hw-td,tw/2],[hw-td,hd],[-hw,hd]];
+    return [[-hw+td,-hd],[hw,-hd],[hw,hd],[-hw+td,hd],[-hw+td,tw/2],[-hw,tw/2],[-hw,-tw/2],[-hw+td,-tw/2]];
+  }
+  if (shape === "u_shape") {
+    const nw = fp.u_notch_w || w * 0.5;
+    const nd = fp.u_notch_d || d * 0.5;
+    const side = fp.u_open_side || "top";
+    if (side === "top")
+      return [[-hw,-hd],[hw,-hd],[hw,hd],[nw/2,hd],[nw/2,hd-nd],[-nw/2,hd-nd],[-nw/2,hd],[-hw,hd]];
+    if (side === "bottom")
+      return [[-hw,-hd],[-nw/2,-hd],[-nw/2,-hd+nd],[nw/2,-hd+nd],[nw/2,-hd],[hw,-hd],[hw,hd],[-hw,hd]];
+    if (side === "right")
+      return [[-hw,-hd],[hw,-hd],[hw,-nw/2],[hw-nd,-nw/2],[hw-nd,nw/2],[hw,nw/2],[hw,hd],[-hw,hd]];
+    return [[-hw,-hd],[hw,-hd],[hw,hd],[-hw,hd],[-hw,nw/2],[-hw+nd,nw/2],[-hw+nd,-nw/2],[-hw,-nw/2]];
+  }
+  if (shape === "plus") {
+    const af = fp.arm_fraction || 0.4;
+    const aw = w * af / 2;
+    const ad = d * af / 2;
+    return [[-aw,-hd],[aw,-hd],[aw,-ad],[hw,-ad],[hw,ad],[aw,ad],[aw,hd],[-aw,hd],[-aw,ad],[-hw,ad],[-hw,-ad],[-aw,-ad]];
+  }
+  if (shape === "hexagon" || shape === "octagon") {
+    const sides = shape === "hexagon" ? 6 : 8;
+    const r = Math.min(w, d) / 2;
+    const pts = [];
+    for (let i = 0; i < sides; i++) {
+      const angle = (i / sides) * Math.PI * 2 - Math.PI / 2;
+      pts.push([r * Math.cos(angle), r * Math.sin(angle)]);
+    }
+    return pts;
+  }
+  return null;
+}
+
+function FootprintShape3D({ w, d, h, fp, color, wireframe }) {
+  const pts = buildFootprintPoints(w, d, fp);
+  const geometry = useMemo(() => {
+    if (!pts) return null;
+    const shape = new THREE.Shape();
+    // Note: in Three.js XZ plane, but we'll use XY then rotate
+    shape.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) {
+      shape.lineTo(pts[i][0], pts[i][1]);
+    }
+    shape.closePath();
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false });
+    // Rotate so Z becomes Y (height axis)
+    geo.rotateX(-Math.PI / 2);
+    return geo;
+  }, [pts, h]);
+
+  if (!geometry) return null;
+
+  return (
+    <mesh geometry={geometry} position={[0, 0, 0]}>
+      <meshBasicMaterial color={color} wireframe={wireframe} transparent opacity={wireframe ? 1 : 0.15} />
+    </mesh>
+  );
+}
+
 // ── Enclosure wireframe box with part highlighting ────────────────────────────
 
-function EnclosureBox({ enclosure, selectedPart, parts }) {
+function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
   if (!enclosure) return null;
 
   const trayZ = parts && parts.tray && parts.tray.tray_z != null ? parts.tray.tray_z : 0;
   const trayEnabled = parts && parts.tray && parts.tray.enabled;
   const bracketEnabled = parts && parts.bracket && parts.bracket.enabled;
-  const halfH = enclosure.h / 2;
+
+  const isNonRect = footprint && footprint.shape && footprint.shape !== "rectangle";
 
   return (
     <group>
@@ -420,11 +518,22 @@ function EnclosureBox({ enclosure, selectedPart, parts }) {
         </mesh>
       )}
 
-      {/* Main wireframe */}
-      <mesh position={[0, enclosure.h / 2, 0]}>
-        <boxGeometry args={[enclosure.w, enclosure.h, enclosure.d]} />
-        <meshBasicMaterial color="#4ade80" wireframe />
-      </mesh>
+      {/* Main enclosure outline */}
+      {isNonRect ? (
+        <FootprintShape3D
+          w={enclosure.w}
+          d={enclosure.d}
+          h={enclosure.h}
+          fp={footprint}
+          color="#4ade80"
+          wireframe={true}
+        />
+      ) : (
+        <mesh position={[0, enclosure.h / 2, 0]}>
+          <boxGeometry args={[enclosure.w, enclosure.h, enclosure.d]} />
+          <meshBasicMaterial color="#4ade80" wireframe />
+        </mesh>
+      )}
     </group>
   );
 }
@@ -466,7 +575,7 @@ function Scene({
   selectedId, selectedType, selectedPart,
   onSelectComponent, onSelectCutout, onSelectCustomCutout,
   onComponentMove, viewMode, transformMode,
-  triggerFrame,
+  triggerFrame, snapSize, footprint,
 }) {
   const [orbitEnabled, setOrbitEnabled] = useState(true);
 
@@ -493,11 +602,12 @@ function Scene({
           onMove={onComponentMove}
           setOrbitEnabled={setOrbitEnabled}
           transformMode={transformMode}
+          snapSize={snapSize || 0}
         />
       ))}
 
       {/* Enclosure outline */}
-      {enclosure && <EnclosureBox enclosure={enclosure} selectedPart={selectedPart} parts={parts} />}
+      {enclosure && <EnclosureBox enclosure={enclosure} selectedPart={selectedPart} parts={parts} footprint={footprint} />}
 
       {/* Connector cutout boxes on walls */}
       {enclosure && cutouts.map((co) => (
@@ -546,7 +656,13 @@ function Scene({
 
 // ── ViewToolbar ───────────────────────────────────────────────────────────────
 
-function ViewToolbar({ viewMode, setViewMode, transformMode, setTransformMode, onFrameAll }) {
+const SNAP_CYCLE = [0, 1, 2, 5]; // 0 = off
+function snapLabel(s) {
+  if (s === 0) return "Snap: OFF";
+  return `Snap: ${s}mm`;
+}
+
+function ViewToolbar({ viewMode, setViewMode, transformMode, setTransformMode, onFrameAll, snapSize, onSnapCycle }) {
   return (
     <div className="view-toolbar">
       <div className="toolbar-group">
@@ -576,6 +692,14 @@ function ViewToolbar({ viewMode, setViewMode, transformMode, setTransformMode, o
           Rotate
         </button>
       </div>
+      <button
+        className={`toolbar-btn${snapSize > 0 ? " active" : ""}`}
+        onClick={onSnapCycle}
+        title="Cycle grid snap: OFF → 1mm → 2mm → 5mm"
+        style={{ minWidth: 80 }}
+      >
+        {snapLabel(snapSize)}
+      </button>
       <button className="toolbar-btn frame-btn" onClick={onFrameAll} title="Reset camera to fit all">
         Frame
       </button>
@@ -591,8 +715,17 @@ export default function Viewport3D({
   onSelectComponent, onSelectCutout, onSelectCustomCutout, onComponentMove,
   viewMode, setViewMode,
   transformMode, setTransformMode,
+  footprint,
 }) {
   const [frameCounter, setFrameCounter] = useState(0);
+  const [snapSize, setSnapSize] = useState(0);
+
+  function handleSnapCycle() {
+    setSnapSize((s) => {
+      const idx = SNAP_CYCLE.indexOf(s);
+      return SNAP_CYCLE[(idx + 1) % SNAP_CYCLE.length];
+    });
+  }
 
   return (
     <div className="viewport-wrapper">
@@ -602,6 +735,8 @@ export default function Viewport3D({
         transformMode={transformMode}
         setTransformMode={setTransformMode}
         onFrameAll={() => setFrameCounter((c) => c + 1)}
+        snapSize={snapSize}
+        onSnapCycle={handleSnapCycle}
       />
       <div className="viewer-wrapper">
         <div className="viewer-label">3D Preview</div>
@@ -626,6 +761,8 @@ export default function Viewport3D({
             viewMode={viewMode}
             transformMode={transformMode}
             triggerFrame={frameCounter}
+            snapSize={snapSize}
+            footprint={footprint}
           />
         </Canvas>
         {components.length === 0 && (

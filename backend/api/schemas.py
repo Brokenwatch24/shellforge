@@ -29,6 +29,16 @@ class CustomCutoutShapeSchema(str, Enum):
     TRIANGLE = "triangle"
 
 
+class FootprintShapeSchema(str, Enum):
+    RECTANGLE = "rectangle"
+    L_SHAPE = "l_shape"
+    T_SHAPE = "t_shape"
+    U_SHAPE = "u_shape"
+    PLUS = "plus"
+    HEXAGON = "hexagon"
+    OCTAGON = "octagon"
+
+
 class ComponentManualSchema(BaseModel):
     """A component defined by its dimensions (no 3D file needed)."""
     name: str = Field(..., example="ESP32 Dev Board")
@@ -67,6 +77,26 @@ class CustomCutoutSchema(BaseModel):
     rotation: float = Field(0.0, description="Rotation in degrees")
 
 
+class FootprintConfigSchema(BaseModel):
+    """Enclosure footprint (shape) configuration."""
+    shape: FootprintShapeSchema = FootprintShapeSchema.RECTANGLE
+    # L-shape
+    notch_w: float = Field(0.0, description="Notch width (0=auto)")
+    notch_d: float = Field(0.0, description="Notch depth (0=auto)")
+    notch_corner: str = Field("top_right", description="top_right/top_left/bottom_right/bottom_left")
+    # T-shape
+    tab_w: float = Field(0.0, description="Tab width (0=auto)")
+    tab_d: float = Field(0.0, description="Tab depth (0=auto)")
+    tab_side: str = Field("top", description="top/bottom/left/right")
+    # U-shape
+    u_notch_w: float = Field(0.0, description="U notch width (0=auto)")
+    u_notch_d: float = Field(0.0, description="U notch depth (0=auto)")
+    u_open_side: str = Field("top", description="top/bottom/left/right")
+    # Plus
+    arm_fraction: float = Field(0.4, description="Arm width fraction (0-1)")
+    polygon_sides: int = Field(6, description="Sides for polygon shapes")
+
+
 class PartConfigSchema(BaseModel):
     style: str = "classic"
     fillet_radius: float = 1.5
@@ -76,6 +106,8 @@ class PartConfigSchema(BaseModel):
     tray_thickness: float = 2.0
     bracket_hole_diameter: float = 4.0
     enabled: bool = True
+    edge_style: str = "fillet"   # "none" | "fillet" | "chamfer"
+    chamfer_size: float = 1.5    # mm
 
 
 class PartsSchema(BaseModel):
@@ -119,6 +151,9 @@ class EnclosureRequestSchema(BaseModel):
     lid_hole_style: str = Field("countersunk", description="through | countersunk | closed")
     enclosure_style: str = Field("classic", description="classic | vented | rounded | ribbed | minimal")
     pcb_standoffs_enabled: bool = Field(True, description="Auto-generate PCB standoffs")
+
+    # Footprint shape
+    footprint: FootprintConfigSchema = FootprintConfigSchema()
 
     # Per-part configs
     parts: PartsSchema = PartsSchema()

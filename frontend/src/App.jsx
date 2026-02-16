@@ -8,7 +8,9 @@ import EnclosureConfigPanel from "./components/EnclosureConfig";
 import PartsList from "./components/PartsList";
 import StylePresets from "./components/StylePresets";
 import Viewport3D from "./components/Viewport3D";
-import { fetchConnectors, generateEnclosure, downloadUrl } from "./api";
+import LibrarySearch from "./components/LibrarySearch";
+import FootprintConfig from "./components/FootprintConfig";
+import { fetchConnectors, generateEnclosure, downloadUrl, download3mfUrl } from "./api";
 import "./App.css";
 
 const DEFAULT_CONFIG = {
@@ -39,10 +41,25 @@ const DEFAULT_PART = {
 };
 
 const DEFAULT_PARTS = {
-  base:    { ...DEFAULT_PART, enabled: true },
-  lid:     { ...DEFAULT_PART, enabled: true },
+  base:    { ...DEFAULT_PART, enabled: true, edge_style: "fillet", chamfer_size: 1.5 },
+  lid:     { ...DEFAULT_PART, enabled: true, edge_style: "fillet", chamfer_size: 1.5 },
   tray:    { ...DEFAULT_PART, enabled: false },
   bracket: { ...DEFAULT_PART, enabled: false },
+};
+
+const DEFAULT_FOOTPRINT = {
+  shape: "rectangle",
+  notch_w: 0,
+  notch_d: 0,
+  notch_corner: "top_right",
+  tab_w: 0,
+  tab_d: 0,
+  tab_side: "top",
+  u_notch_w: 0,
+  u_notch_d: 0,
+  u_open_side: "top",
+  arm_fraction: 0.4,
+  polygon_sides: 6,
 };
 
 export default function App() {
@@ -57,6 +74,7 @@ export default function App() {
   const [parts, setParts] = useState(DEFAULT_PARTS);
   const [selectedPart, setSelectedPart] = useState("base");
   const [activePreset, setActivePreset] = useState(null);
+  const [footprint, setFootprint] = useState(DEFAULT_FOOTPRINT);
   const [connectorTypes, setConnectorTypes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -220,6 +238,7 @@ export default function App() {
         cutouts,
         custom_cutouts: customCutouts,
         parts,
+        footprint,
       });
       setResult(data);
     } catch (e) {
@@ -259,6 +278,9 @@ export default function App() {
             <div className="panel">
               <FileImport onImported={handleImported} />
             </div>
+
+            {/* 2b. Component Library Search */}
+            <LibrarySearch onAdd={addComponent} />
 
             {/* 3. Parts List */}
             <PartsList
@@ -309,6 +331,9 @@ export default function App() {
               <EnclosureConfigPanel config={config} onChange={setConfig} />
             </div>
 
+            {/* 5b. Footprint shape */}
+            <FootprintConfig footprint={footprint} onChange={setFootprint} />
+
             {/* 6. Generate button + result */}
             <div className="generate-area">
               <button
@@ -352,6 +377,15 @@ export default function App() {
                         Base STL
                       </a>
                     )}
+                    {result.files.base_3mf && (
+                      <a
+                        href={download3mfUrl(result.job_id, "base")}
+                        download="enclosure_base.3mf"
+                        className="download-btn secondary"
+                      >
+                        Base 3MF
+                      </a>
+                    )}
                     {result.files.lid && (
                       <a
                         href={downloadUrl(result.job_id, "lid")}
@@ -359,6 +393,15 @@ export default function App() {
                         className="download-btn secondary"
                       >
                         Lid STL
+                      </a>
+                    )}
+                    {result.files.lid_3mf && (
+                      <a
+                        href={download3mfUrl(result.job_id, "lid")}
+                        download="enclosure_lid.3mf"
+                        className="download-btn secondary"
+                      >
+                        Lid 3MF
                       </a>
                     )}
                     {result.files.tray && (
@@ -404,6 +447,7 @@ export default function App() {
               setViewMode={setViewMode}
               transformMode={transformMode}
               setTransformMode={setTransformMode}
+              footprint={footprint}
             />
           </div>
         </div>

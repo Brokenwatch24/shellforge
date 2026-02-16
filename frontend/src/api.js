@@ -38,3 +38,22 @@ export async function importModel(file) {
 export function downloadUrl(jobId, part) {
   return `${BASE}/download/${jobId}/${part}`;
 }
+
+export function download3mfUrl(jobId, part) {
+  return `${BASE}/download/${jobId}/${part}/3mf`;
+}
+
+export async function searchLibrary(q = '', category = '') {
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if (category) params.set('category', category);
+  const res = await fetch(`${BASE}/library/search?${params}`);
+  if (!res.ok) throw new Error("Library search failed");
+  return res.json();
+}
+
+export async function fetchCategories() {
+  const res = await fetch(`${BASE}/library/categories`);
+  if (!res.ok) throw new Error("Failed to fetch categories");
+  return res.json();
+}
