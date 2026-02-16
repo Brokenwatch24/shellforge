@@ -585,6 +585,92 @@ function CustomCutoutMesh({ cutout, enclosure, isSelected, onSelect, onMove, set
   );
 }
 
+// ── Geometric wrapper outline (convex hull of all component corners + offset) ──
+
+function convexHull(points) {
+  if (points.length < 3) return points
+  // Find leftmost point
+  let start = 0
+  for (let i = 1; i < points.length; i++) {
+    if (points[i][0] < points[start][0]) start = i
+  }
+  const hull = []
+  let current = start
+  do {
+    hull.push(points[current])
+    let next = (current + 1) % points.length
+    for (let i = 0; i < points.length; i++) {
+      const cross =
+        (points[next][0] - points[current][0]) * (points[i][1] - points[current][1]) -
+        (points[next][1] - points[current][1]) * (points[i][0] - points[current][0])
+      if (cross < 0) next = i
+    }
+    current = next
+  } while (current !== start && hull.length < points.length)
+  return hull
+}
+
+function normalOf(a, b) {
+  const dx = b[0] - a[0]
+  const dz = b[1] - a[1]
+  const len = Math.sqrt(dx * dx + dz * dz) || 1
+  return [dz / len, -dx / len]  // perpendicular pointing outward
+}
+
+function offsetPolygon(pts, d) {
+  return pts.map((p, i) => {
+    const prev = pts[(i - 1 + pts.length) % pts.length]
+    const next = pts[(i + 1) % pts.length]
+    const n1 = normalOf(prev, p)
+    const n2 = normalOf(p, next)
+    const nx = (n1[0] + n2[0]) / 2
+    const nz = (n1[1] + n2[1]) / 2
+    const len = Math.sqrt(nx * nx + nz * nz) || 1
+    return [p[0] + (nx / len) * d, p[1] + (nz / len) * d]
+  })
+}
+
+function computeWrapperOutline(components, config) {
+  const visible = components.filter((c) => c.visible !== false)
+  if (!visible.length) return null
+
+  const pad = Math.max(config.padding_x || 3, config.padding_y || 3)
+  const wall = config.wall_thickness || 2.5
+
+  // Collect all 4 corners of each component in plan-view XZ space
+  // Three.js: X = eng X, Z = eng Y (depth)
+  const allCorners = []
+  for (const comp of visible) {
+    const cx = comp.x || 0
+    const cz = comp.y || 0  // engineering Y -> Three.js Z
+    const hw = (comp.width || 0) / 2
+    const hd = (comp.depth || 0) / 2
+    const rotY = -(comp.rotY || 0)  // negate: Three.js vs engineering convention
+
+    const localCorners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]]
+    for (const [lx, lz] of localCorners) {
+      const rx = lx * Math.cos(rotY) - lz * Math.sin(rotY)
+      const rz = lx * Math.sin(rotY) + lz * Math.cos(rotY)
+      allCorners.push([cx + rx, cz + rz])
+    }
+  }
+
+  if (!allCorners.length) return null
+
+  const hull = convexHull(allCorners)
+  const outerHull = offsetPolygon(hull, pad + wall)
+  const innerHull = offsetPolygon(hull, pad)
+
+  // Compute enclosure height
+  let maxH = 0
+  for (const comp of visible) {
+    maxH = Math.max(maxH, (comp.ground_z || 0) + (comp.height || 0))
+  }
+  const outerH = maxH + (config.padding_z || 3) + (config.floor_thickness || 2.5)
+
+  return { outerHull, innerHull, outerH }
+}
+
 // ── Build footprint points for non-rectangular shapes ─────────────────────────
 
 function buildFootprintPoints(w, d, fp) {
@@ -675,23 +761,53 @@ function FootprintShape3D({ w, d, h, fp, color, wireframe, yOffset = 0 }) {
   );
 }
 
-// ── Enclosure wireframe box with part highlighting ────────────────────────────
-// Rendered inside a group at the enclosure's world center.
-// All positions here are LOCAL (relative to group center).
+// ── Enclosure wrapper shape (true geometric fit) ──────────────────────────────
+// Rendered at origin — the enclosure group handles world positioning.
+// Uses convex hull of component corners + offset for a true wrapper shape.
 
-function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
-  if (!enclosure) return null;
+function EnclosureBox({ components, config, enclosure, selectedPart, parts, footprint }) {
+  if (!enclosure) return null
 
-  const trayZ = parts && parts.tray && parts.tray.tray_z != null ? parts.tray.tray_z : 0;
-  const trayEnabled = parts && parts.tray && parts.tray.enabled;
-  const bracketEnabled = parts && parts.bracket && parts.bracket.enabled;
+  const trayZ = parts && parts.tray && parts.tray.tray_z != null ? parts.tray.tray_z : 0
+  const trayEnabled = parts && parts.tray && parts.tray.enabled
+  const bracketEnabled = parts && parts.bracket && parts.bracket.enabled
+  const hh = enclosure.h / 2
 
-  const isNonRect = footprint && footprint.shape && footprint.shape !== "rectangle";
-  const hh = enclosure.h / 2;  // half-height for local coords
+  // Compute wrapper geometry from component positions
+  const outline = useMemo(
+    () => computeWrapperOutline(components, config),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [components, config, components.map((c) => `${c.x},${c.y},${c.rotY},${c.visible}`).join("|")]
+  )
+
+  const wrapperGeo = useMemo(() => {
+    if (!outline || !outline.outerHull || outline.outerHull.length < 3) return null
+    const shape = new THREE.Shape()
+    const [first, ...rest] = outline.outerHull
+    shape.moveTo(first[0], first[1])  // X, Z in plan = X, Z in Three.js
+    rest.forEach(([x, z]) => shape.lineTo(x, z))
+    shape.closePath()
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: outline.outerH, bevelEnabled: false })
+    // Rotate so extrusion goes upward (Y in Three.js), bottom at y = enclosure bottom
+    geo.rotateX(-Math.PI / 2)
+    return geo
+  }, [outline])
+
+  // Fallback geometry if convex hull fails — use bounding box
+  const fallbackGeo = useMemo(() => {
+    const isNonRect = footprint && footprint.shape && footprint.shape !== "rectangle"
+    if (isNonRect) return null  // handled below
+    return null  // let fallback mesh handle it
+  }, [footprint])
+
+  useEffect(() => () => { if (wrapperGeo) wrapperGeo.dispose() }, [wrapperGeo])
+
+  const isNonRect = footprint && footprint.shape && footprint.shape !== "rectangle"
+  const bottomOffset = -hh  // group is centered, so bottom = -hh in local Y
 
   return (
     <group>
-      {/* Base half highlight — bottom ~60% of enclosure */}
+      {/* Base half highlight */}
       {selectedPart === "base" && (
         <mesh position={[0, -hh * 0.4, 0]}>
           <boxGeometry args={[enclosure.w + 0.5, enclosure.h * 0.6, enclosure.d + 0.5]} />
@@ -699,7 +815,7 @@ function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
         </mesh>
       )}
 
-      {/* Lid half highlight — top ~30% of enclosure */}
+      {/* Lid half highlight */}
       {selectedPart === "lid" && (
         <mesh position={[0, hh * 0.7, 0]}>
           <boxGeometry args={[enclosure.w + 0.5, enclosure.h * 0.3, enclosure.d + 0.5]} />
@@ -707,7 +823,7 @@ function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
         </mesh>
       )}
 
-      {/* Tray: thin horizontal plane at tray_z height */}
+      {/* Tray: thin horizontal plane */}
       {selectedPart === "tray" && trayEnabled && (
         <mesh position={[0, -hh + trayZ + 1, 0]}>
           <boxGeometry args={[enclosure.w * 0.9, 2, enclosure.d * 0.9]} />
@@ -715,7 +831,7 @@ function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
         </mesh>
       )}
 
-      {/* Bracket: small shape on one side */}
+      {/* Bracket: small shape on side */}
       {selectedPart === "bracket" && bracketEnabled && (
         <mesh position={[enclosure.w / 2 + 2, -hh * 0.4, 0]}>
           <boxGeometry args={[4, enclosure.h * 0.6, 30]} />
@@ -723,8 +839,20 @@ function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
         </mesh>
       )}
 
-      {/* Main enclosure outline — non-rect footprint or plain box */}
-      {isNonRect ? (
+      {/* True wrapper geometry (convex hull of component corners, offset) */}
+      {wrapperGeo ? (
+        <group position={[0, bottomOffset, 0]}>
+          {/* Wireframe outline */}
+          <mesh geometry={wrapperGeo}>
+            <meshBasicMaterial color="#4ade80" wireframe />
+          </mesh>
+          {/* Transparent solid fill */}
+          <mesh geometry={wrapperGeo}>
+            <meshStandardMaterial color="#4ade80" transparent opacity={0.05} />
+          </mesh>
+        </group>
+      ) : isNonRect ? (
+        /* Explicit non-rectangular footprint (from footprint config) */
         <FootprintShape3D
           w={enclosure.w}
           d={enclosure.d}
@@ -735,13 +863,14 @@ function EnclosureBox({ enclosure, selectedPart, parts, footprint }) {
           yOffset={-hh}
         />
       ) : (
+        /* Fallback: simple bounding box wireframe */
         <mesh position={[0, 0, 0]}>
           <boxGeometry args={[enclosure.w, enclosure.h, enclosure.d]} />
           <meshBasicMaterial color="#4ade80" wireframe />
         </mesh>
       )}
     </group>
-  );
+  )
 }
 
 // ── Camera frame-all helper ───────────────────────────────────────────────────
@@ -823,6 +952,8 @@ function Scene({
         <group position={encPos}>
           {/* Enclosure outline + part highlights */}
           <EnclosureBox
+            components={components}
+            config={config}
             enclosure={enclosure}
             selectedPart={selectedPart}
             parts={parts}
@@ -997,7 +1128,7 @@ export default function Viewport3D({
             flexShrink: 0,
           }} />
           <span style={{ color: isCustomShape ? "#f97316" : "#22c55e", whiteSpace: "nowrap" }}>
-            {isCustomShape ? `Custom Shape: ${shapeLabel}` : "Auto Wrap"}
+            {isCustomShape ? `Custom Shape: ${shapeLabel}` : "True Wrapper"}
           </span>
         </div>
 

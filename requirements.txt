@@ -3,3 +3,4 @@ trimesh>=4.0.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
 python-multipart>=0.0.9
+shapely>=2.0.0

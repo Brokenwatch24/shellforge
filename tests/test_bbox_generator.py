@@ -62,5 +62,52 @@ def main():
     print("\nTest PASSED! Open the STL files in your slicer to preview.")
 
 
+def test_wrapper():
+    """Test wrapper engine with an L-shaped component arrangement."""
+    print("\nShellForge Wrapper Engine Test")
+    print("=" * 40)
+
+    from backend.engine.wrapper import generate_wrapper_enclosure
+    from backend.engine.models import EnclosureConfig, LidStyle
+
+    # L-shaped arrangement: two components making an L
+    components = [
+        {
+            "name": "PCB Main",
+            "width": 60,
+            "depth": 40,
+            "height": 15,
+            "x": 0,
+            "y": 0,
+            "ground_z": 0,
+        },
+        {
+            "name": "PCB Side",
+            "width": 30,
+            "depth": 20,
+            "height": 10,
+            "x": 45,
+            "y": 30,
+            "ground_z": 0,
+        },
+    ]
+    config = EnclosureConfig(
+        padding_x=3,
+        padding_y=3,
+        padding_z=3,
+        lid_style=LidStyle.SCREWS,
+    )
+    result = generate_wrapper_enclosure(components, config, "./output/test_wrapper")
+    assert "base" in result, "Expected 'base' in result"
+    assert os.path.exists(result["base"]), f"Base STL not found: {result['base']}"
+    size_kb = os.path.getsize(result["base"]) / 1024
+    print(f"\nOutput files:")
+    for part, path in result.items():
+        part_size_kb = os.path.getsize(path) / 1024
+        print(f"   {part}: {path} ({part_size_kb:.1f} KB)")
+    print(f"\nWrapper test PASSED! L-shaped enclosure: {size_kb:.1f} KB base STL")
+
+
 if __name__ == "__main__":
     main()
+    test_wrapper()

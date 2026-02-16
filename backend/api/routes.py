@@ -16,6 +16,7 @@ from ..engine.models import (
     FootprintConfig
 )
 from ..engine.bbox_only import generate_from_manual_bbox
+from ..engine.wrapper import generate_wrapper_enclosure
 from ..connectors.profiles import list_connectors
 
 router = APIRouter()
@@ -257,6 +258,7 @@ def generate_enclosure(request: EnclosureRequestSchema):
             "y": c.y,
             "z": c.ground_z if c.ground_z != 0 else c.z,
             "ground_z": c.ground_z,
+            "rot_y": getattr(c, "rot_y", 0) or 0,
             "is_pcb": c.is_pcb,
             "pcb_screw_diameter": c.pcb_screw_diameter,
             "standoff_positions": c.standoff_positions,
@@ -356,15 +358,23 @@ def generate_enclosure(request: EnclosureRequestSchema):
         custom_cutouts=custom_cutouts,
     )
 
-    # Generate
+    # Generate — use wrapper engine (true geometric fit) with bbox fallback
     try:
-        result = generate_from_manual_bbox(
-            components_bbox=components_bbox,
+        result = generate_wrapper_enclosure(
+            components_spec=components_bbox,
             config=config,
             output_dir=str(job_dir),
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Engine error: {str(e)}")
+        print(f"[WARN] Wrapper engine failed ({e}), falling back to bbox_only")
+        try:
+            result = generate_from_manual_bbox(
+                components_bbox=components_bbox,
+                config=config,
+                output_dir=str(job_dir),
+            )
+        except Exception as e2:
+            raise HTTPException(status_code=500, detail=f"Engine error: {str(e2)}")
 
     # Compute dimensions for response
     all_x = [c["x"] - c["width"]/2 for c in components_bbox] + [c["x"] + c["width"]/2 for c in components_bbox]
